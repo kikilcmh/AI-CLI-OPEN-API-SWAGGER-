@@ -1,0 +1,35 @@
+services:
+  agy-api:
+    build: .
+    container_name: agy-api
+    restart: unless-stopped
+    ports:
+      - "3986:3986"
+    env_file: .env
+    environment:
+      HOME: /home/app-data
+      AGY_CWD: /workspace
+    volumes:
+      # agy binary (read-only)
+      - /home/runia/.local/bin/agy:/usr/local/bin/agy:ro
+      # claude binary (read-only)
+      - /usr/bin/claude:/usr/bin/claude:ro
+      # auth credentials & config — rw agar agy bisa simpan sessions ke brain/
+      - /home/runia/.gemini:/home/app-data/.gemini:rw
+      # claude config & sessions
+      - /home/runia/.claude:/home/app-data/.claude:rw
+      # optional: working dir untuk agy (file edits, dll)
+      - /home/runia/srv/clients:/workspace:rw
+    user: "1000:1000"
+
+  agy-dashboard:
+    build: ./dashboard
+    container_name: agy-dashboard
+    restart: unless-stopped
+    environment:
+      API_URL: http://agy-api:3986
+      API_KEY: ${API_KEYS}
+      ADMIN_KEY: ${ADMIN_KEY}
+    depends_on:
+      - agy-api
+    user: "1000:1000"
