@@ -9,7 +9,7 @@
 ![Express](https://img.shields.io/badge/Express-5-000000?style=flat-square&logo=express&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 
-[Features](#features) · [Architecture](#architecture) · [Quick Start](#quick-start) · [Authentication](#authentication) · [API Reference](#api-reference) · [Dashboard](#dashboard)
+[Features](#features) · [Architecture](#architecture) · [Installation](#installation-guide) · [Quick Start](#quick-start) · [Authentication](#authentication) · [API Reference](#api-reference) · [Dashboard](#dashboard)
 
 </div>
 
@@ -65,13 +65,77 @@ A single port serves everything. The dashboard container runs internally and is 
 
 ---
 
+## Installation Guide
+
+This section walks through installing every dependency from scratch on a fresh Linux server (Ubuntu/Debian).
+
+### Step 1 — Install Docker
+
+```bash
+# Install Docker
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Verify
+docker --version
+docker compose version
+```
+
+### Step 2 — Install Claude Code CLI
+
+```bash
+# Requires Node.js 18+
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# Install claude globally
+npm install -g @anthropic-ai/claude-code
+
+# Authenticate (opens browser login)
+claude login
+
+# Verify
+claude --version
+```
+
+### Step 3 — Install Google Antigravity CLI (agy)
+
+```bash
+# Download the agy binary (replace URL with the latest release)
+curl -L https://dl.google.com/antigravity/agy-linux-amd64 -o ~/.local/bin/agy
+chmod +x ~/.local/bin/agy
+
+# Authenticate
+agy login
+
+# Verify
+agy --version
+```
+
+> **Note:** The exact download URL for `agy` may vary. Check [developers.google.com/antigravity](https://developers.google.com/antigravity) for the latest installer.
+
+### Step 4 — Verify both CLIs work
+
+```bash
+# Test agy
+agy --print "say hello" --output-format json
+
+# Test claude
+claude --print "say hello" --output-format json
+```
+
+Both commands should return a JSON response. If either fails, re-authenticate (`agy login` / `claude login`) before proceeding.
+
+---
+
 ## Quick Start
 
 ### Prerequisites
 
 | Requirement | Notes |
 |---|---|
-| Docker & Docker Compose | v2+ |
+| Docker & Docker Compose | v2+ — see [Installation Guide](#installation-guide) |
 | [`agy`](https://developers.google.com/antigravity) | Installed and authenticated on the host |
 | [`claude`](https://github.com/anthropics/claude-code) | Installed and authenticated on the host |
 
