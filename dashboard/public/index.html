@@ -244,7 +244,7 @@ tailwind.config = {
     <div id="chat-wizard" class="flex-shrink-0 border-b border-surface-800 bg-surface-900">
       <!-- Step 1: LLM picker -->
       <div id="wizard-step1" class="p-4">
-        <p class="text-xs text-surface-500 uppercase tracking-wide mb-3 font-medium">1 — Pilih LLM</p>
+        <p class="text-xs text-surface-500 uppercase tracking-wide mb-3 font-medium">1 — Select LLM</p>
         <div class="grid grid-cols-2 gap-3 max-w-lg">
           <button onclick="selectTool('agy')" id="btn-tool-agy"
             class="tool-btn flex flex-col gap-1.5 p-4 rounded-xl border-2 border-surface-700 hover:border-blue-500 transition-colors text-left">
@@ -262,7 +262,7 @@ tailwind.config = {
       </div>
       <!-- Step 2: Model picker -->
       <div id="wizard-step2" class="hidden px-4 pb-4">
-        <p class="text-xs text-surface-500 uppercase tracking-wide mb-3 font-medium">2 — Pilih Model</p>
+        <p class="text-xs text-surface-500 uppercase tracking-wide mb-3 font-medium">2 — Select Model</p>
         <div id="model-picker" class="flex flex-wrap gap-2 max-w-2xl"></div>
       </div>
     </div>
@@ -271,7 +271,7 @@ tailwind.config = {
     <div id="chat-messages" class="flex-1 overflow-y-auto scrollbar-thin p-4 space-y-3">
       <div id="chat-welcome" class="text-center py-12 text-surface-600">
         <svg class="w-10 h-10 mx-auto mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
-        <p class="text-sm">Pilih LLM dan model di atas, lalu mulai chat</p>
+        <p class="text-sm">Select an LLM and model above, then start chatting</p>
       </div>
     </div>
 
@@ -285,7 +285,7 @@ tailwind.config = {
         </label>
         <div class="flex-1">
           <textarea id="chat-input" rows="1"
-            placeholder="Ketik pesan... (Enter kirim, Shift+Enter baris baru)"
+            placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
             class="w-full bg-surface-800 border border-surface-700 rounded-xl px-4 py-2.5 text-sm text-surface-200 placeholder-surface-500 outline-none focus:border-brand-500 resize-none transition-colors"
             oninput="autoResize(this)"
             onkeydown="handleKeydown(event)"></textarea>
@@ -649,8 +649,8 @@ async function openSession(sessionId) {
 
     if (!data.messages || !data.messages.length) {
       container.innerHTML = `<div class="text-center py-8 text-surface-600 text-sm fade-in">
-        Session <span class="font-mono text-brand-400">${sessionId.slice(0,12)}…</span> — belum ada riwayat chat.<br>
-        <span class="text-xs">Ketik pesan untuk melanjutkan.</span></div>`;
+        Session <span class="font-mono text-brand-400">${sessionId.slice(0,12)}…</span> — no history yet.<br>
+        <span class="text-xs">Type a message to continue.</span></div>`;
     } else {
       for (const msg of data.messages) {
         // Strip file paths appended to user messages
@@ -661,7 +661,7 @@ async function openSession(sessionId) {
       container.scrollTop = container.scrollHeight;
     }
   } catch (e) {
-    container.innerHTML = `<div class="text-red-400 text-sm p-4">Gagal load history: ${escHtml(e.message)}</div>`;
+    container.innerHTML = `<div class="text-red-400 text-sm p-4">Failed to load history: ${escHtml(e.message)}</div>`;
   }
 
   document.getElementById('chat-input').focus();
@@ -697,7 +697,7 @@ async function selectTool(tool) {
     // Auto-select first model
     if (modelList.length) selectModel(modelList[0].id);
   } catch {
-    picker.innerHTML = '<span class="text-xs text-red-400">Gagal load models</span>';
+    picker.innerHTML = '<span class="text-xs text-red-400">Failed to load models</span>';
   }
 
   // Both tools support images
@@ -897,7 +897,7 @@ async function sendMessage() {
               if (msgEl) msgEl.innerHTML = renderMarkdown(fullText) + typingCursor();
             } else if (su?.tool_name && su?.state === 'ACTIVE' && !fullText && msgEl) {
               // Show what tool agy is using while waiting for text
-              const toolLabels = { read_file: 'membaca file', run_command: 'menjalankan perintah', search_web: 'mencari web', view_file: 'melihat file', list_dir: 'membaca direktori', generate_image: 'membuat gambar' };
+              const toolLabels = { read_file: 'reading file', run_command: 'running command', search_web: 'searching web', view_file: 'viewing file', list_dir: 'listing directory', generate_image: 'generating image' };
               const label = toolLabels[su.tool_name] || su.tool_name;
               msgEl.innerHTML = `<span class="text-surface-500 text-xs">🔧 ${escHtml(label)}…</span>` + typingCursor();
             }
