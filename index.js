@@ -261,38 +261,38 @@ const swaggerSpec = swaggerJsdoc({
       description: [
         '## AGY API — Multi-Model AI Gateway',
         '',
-        'HTTP API wrapper yang mendukung dua LLM tool secara bersamaan:',
+        'A unified HTTP API wrapping two LLM backends:',
         '',
-        '| Tool | Nilai `tool` | Deskripsi |',
-        '|------|-------------|-----------|',
-        '| **Antigravity CLI** | `agy` | Mendukung Gemini, Claude via Google, GPT. Default. |',
-        '| **Claude Code CLI** | `claude` | Anthropic Claude langsung. Optimal untuk coding. |',
+        '| Tool | `tool` value | Description |',
+        '|------|-------------|-------------|',
+        '| **Antigravity CLI** | `agy` | Gemini, Claude via Google, GPT. Default backend. |',
+        '| **Claude Code CLI** | `claude` | Anthropic Claude directly. Best for coding tasks. |',
         '',
-        '## Flow Penggunaan',
+        '## Usage Flow',
         '',
-        '1. **Ambil daftar model** → `GET /models?tool=agy` atau `GET /models?tool=claude`',
-        '2. **Mulai sesi baru** → `POST /chat` dengan field `tool` dan `model`',
-        '3. **Lanjut sesi** → `POST /sessions/{session_id}/chat` (tool otomatis mengikuti sesi)',
-        '4. **Auto-route** → `POST /route` — LLM classifier kecil (Gemini Flash) otomatis pilih tool terbaik',
+        '1. **List models** → `GET /models?tool=agy` or `GET /models?tool=claude`',
+        '2. **Start a session** → `POST /chat` with `tool` and `model` fields',
+        '3. **Continue session** → `POST /sessions/{session_id}/chat` (tool follows the session automatically)',
+        '4. **Auto-route** → `POST /route` — a small classifier (Gemini Flash) picks the best tool automatically',
         '',
-        '## Autentikasi',
+        '## Authentication',
         '',
-        'Ada tiga mode auth:',
+        'Three auth modes, evaluated in order:',
         '',
-        '| Mode | Header | Cocok untuk |',
-        '|------|--------|-------------|',
+        '| Mode | Header | Use case |',
+        '|------|--------|----------|',
         '| **Admin** | `X-Api-Key: <ADMIN_KEY>` | Manage apps & users |',
-        '| **App + User** | `X-Api-Key: <app_key>` + `X-User-Id: <user_id>` | Integrasi multi-user |',
-        '| **Legacy** | `X-Api-Key: <API_KEYS>` | Backward compat (satu user per key) |',
+        '| **App + User** | `X-Api-Key: <app_key>` + `X-User-Id: <user_id>` | Multi-user integration |',
+        '| **Legacy** | `X-Api-Key: <API_KEYS>` | Single-user / backward compat |',
         '',
         '## Multi-App & Multi-User',
         '',
-        '1. Admin buat App → dapat `app_id` dan `api_key`',
-        '2. App buat User → dapat `user_id`',
-        '3. Tiap request App kirim `X-Api-Key: <app_key>` + `X-User-Id: <user_id>`',
-        '4. Sesi otomatis ter-isolasi per `{app_id, user_id}`',
+        '1. Admin creates an App → receives `app_id` and `api_key`',
+        '2. App creates Users → receives `user_id` per user',
+        '3. Each request sends `X-Api-Key: <app_key>` + `X-User-Id: <user_id>`',
+        '4. Sessions are automatically isolated per `{app_id, user_id}`',
         '',
-        '**Isolasi:** Sesi hanya bisa diakses oleh user yang membuatnya. User lain → `403 Forbidden`.',
+        '**Isolation:** Sessions are only accessible by the user who created them. Others → `403 Forbidden`.',
       ].join('\n'),
     },
     components: {
@@ -305,15 +305,15 @@ const swaggerSpec = swaggerJsdoc({
           type: 'object',
           required: ['prompt'],
           properties: {
-            prompt:  { type: 'string', example: 'Jelaskan apa itu Docker dalam satu paragraf.' },
-            tool:    { type: 'string', enum: ['agy', 'claude'], default: 'agy', description: 'LLM tool yang dipakai. `agy` = Antigravity CLI (Gemini/GPT/Claude via Google), `claude` = Claude Code CLI (Anthropic langsung). Untuk sesi lanjutan, tool otomatis mengikuti session.' },
-            model:   { type: 'string', example: 'gemini-4-hydrogen-low', description: 'ID model dari `GET /models?tool=agy` atau `GET /models?tool=claude`.' },
-            effort:  { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], example: 'low', description: 'Effort level. Tidak semua model support (misal gemini-2.0-flash tidak support effort).' },
-            stream:  { type: 'boolean', default: false, description: 'Aktifkan Server-Sent Events (SSE).' },
+            prompt:  { type: 'string', example: 'Explain what Docker is in one paragraph.' },
+            tool:    { type: 'string', enum: ['agy', 'claude'], default: 'agy', description: 'LLM backend to use. `agy` = Antigravity CLI (Gemini/GPT/Claude via Google), `claude` = Claude Code CLI (Anthropic). For existing sessions, the tool follows the session automatically.' },
+            model:   { type: 'string', example: 'gemini-4-hydrogen-low', description: 'Model ID from `GET /models?tool=agy` or `GET /models?tool=claude`.' },
+            effort:  { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], example: 'low', description: 'Effort level. Not all models support this (e.g. gemini-2.0-flash ignores effort).' },
+            stream:  { type: 'boolean', default: false, description: 'Enable Server-Sent Events (SSE) streaming.' },
             images_base64: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Array gambar — data URL (`data:image/png;base64,...`) atau plain base64. Didukung oleh `agy` dan `claude`. Untuk `claude`, gunakan model Sonnet/Opus (Haiku tidak mendukung vision).',
+              description: 'Array of images — data URL (`data:image/png;base64,...`) or plain base64. Supported by both `agy` and `claude`. For `claude`, use Sonnet or Opus (Haiku does not support vision).',
               example: ['data:image/png;base64,iVBORw0KGgo='],
             },
           },
@@ -322,21 +322,21 @@ const swaggerSpec = swaggerJsdoc({
           type: 'object',
           required: ['prompt'],
           properties: {
-            prompt:  { type: 'string', example: 'Apa yang ada di gambar ini?' },
+            prompt:  { type: 'string', example: 'What is in this image?' },
             model:   { type: 'string', example: 'gemini-4-hydrogen-low' },
             effort:  { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
             stream:  { type: 'string', enum: ['true', 'false'], default: 'false' },
             images: {
               type: 'array',
               items: { type: 'string', format: 'binary' },
-              description: 'File gambar (jpg, png, webp, dsb). Maks 10 file, 20 MB/file.',
+              description: 'Image files (jpg, png, webp, etc.). Max 10 files, 20 MB each.',
             },
           },
         },
         ChatResponse: {
           type: 'object',
           properties: {
-            session_id:      { type: 'string', format: 'uuid', description: 'Alias dari conversation_id. Pakai ini untuk melanjutkan sesi di request berikutnya.' },
+            session_id:      { type: 'string', format: 'uuid', description: 'Alias for conversation_id. Use this to continue the session in subsequent requests.' },
             conversation_id: { type: 'string', format: 'uuid' },
             status:          { type: 'string', enum: ['SUCCESS', 'ERROR'] },
             response:        { type: 'string' },
@@ -357,7 +357,7 @@ const swaggerSpec = swaggerJsdoc({
         },
         SseEvent: {
           type: 'object',
-          description: 'Satu baris NDJSON yang dikirim via SSE.',
+          description: 'A single NDJSON line sent via SSE.',
           properties: {
             event: { type: 'string', enum: ['init', 'step_update', 'result', 'error'] },
           },
@@ -371,13 +371,13 @@ const swaggerSpec = swaggerJsdoc({
           properties: {
             session_id:    { type: 'string', format: 'uuid' },
             title:         { type: 'string' },
-            preview:       { type: 'string', description: 'Cuplikan pesan pertama.' },
+            preview:       { type: 'string', description: 'Snippet of the first message.' },
             num_steps:     { type: 'integer' },
             updated_at:    { type: 'string', format: 'date-time' },
             last_modified: { type: 'string', format: 'date-time' },
-            workspace:     { type: 'array', items: { type: 'string' }, description: 'Working directories yang dipakai.' },
-            tool_used:     { type: 'string', enum: ['agy', 'claude'], description: 'Tool yang dipakai di sesi ini.' },
-            model_used:    { type: 'string', description: 'Model yang dipakai saat sesi dibuat.' },
+            workspace:     { type: 'array', items: { type: 'string' }, description: 'Working directories used in this session.' },
+            tool_used:     { type: 'string', enum: ['agy', 'claude'], description: 'Backend tool used in this session.' },
+            model_used:    { type: 'string', description: 'Model used when the session was created.' },
           },
         },
         Message: {
@@ -399,7 +399,7 @@ const swaggerSpec = swaggerJsdoc({
           properties: {
             app_id:     { type: 'string', format: 'uuid' },
             name:       { type: 'string', example: 'Mobile App' },
-            api_key:    { type: 'string', description: 'Key yang dipakai di header X-Api-Key untuk app ini.' },
+            api_key:    { type: 'string', description: 'Key used in the X-Api-Key header for this app.' },
             created_at: { type: 'string', format: 'date-time' },
           },
         },
@@ -409,7 +409,7 @@ const swaggerSpec = swaggerJsdoc({
             user_id:     { type: 'string', format: 'uuid' },
             app_id:      { type: 'string', format: 'uuid' },
             name:        { type: 'string', example: 'John Doe' },
-            external_id: { type: 'string', nullable: true, description: 'ID dari sistem eksternal (opsional, harus unik per app).' },
+            external_id: { type: 'string', nullable: true, description: 'ID from your external system (optional, must be unique per app).' },
             created_at:  { type: 'string', format: 'date-time' },
           },
         },
@@ -420,22 +420,21 @@ const swaggerSpec = swaggerJsdoc({
   apis: [],
 });
 
-// Inject route docs langsung ke spec
+// Inject route docs into spec
 swaggerSpec.paths = {
   '/sessions': {
     post: {
       tags: ['Sessions'],
-      summary: 'Buat session baru (pre-allocate)',
+      summary: 'Pre-allocate a new session',
       description: [
-        'Buat session ID sebelum mengirim pesan pertama. Berguna untuk:',
-        '- Menyiapkan `session_id` di client sebelum chat',
-        '- Menentukan tool & model di awal',
+        'Create a session ID before sending the first message. Useful for:',
+        '- Preparing a `session_id` on the client before chatting',
+        '- Locking in the tool & model upfront',
         '',
-        'Lanjutkan chat via `POST /sessions/{session_id}/chat`.',
+        'Continue the chat via `POST /sessions/{session_id}/chat`.',
         '',
-        '> **Catatan Claude:** `session_id` ini dipakai untuk pesan pertama. Setelah pesan pertama,',
-        '> Claude membuat session ID-nya sendiri — gunakan `session_id` dari response chat tersebut',
-        '> untuk melanjutkan percakapan.',
+        '> **Claude note:** This `session_id` is used for the first message only. After the first message,',
+        '> Claude generates its own session ID — use the `session_id` from the chat response to continue.',
       ].join('\n'),
       requestBody: {
         required: false,
@@ -443,15 +442,15 @@ swaggerSpec.paths = {
           type: 'object',
           properties: {
             tool:  { type: 'string', enum: ['agy', 'claude'], default: 'agy' },
-            model: { type: 'string', example: 'gemini-4-hydrogen-low', description: 'Model yang akan dipakai. Bisa dioverride saat chat.' },
+            model: { type: 'string', example: 'gemini-4-hydrogen-low', description: 'Model to use. Can be overridden at chat time.' },
           },
         }, examples: {
-          agy:    { summary: 'Buat sesi Antigravity', value: { tool: 'agy', model: 'gemini-4-hydrogen-low' } },
-          claude: { summary: 'Buat sesi Claude Code', value: { tool: 'claude', model: 'claude-sonnet-4-6' } },
+          agy:    { summary: 'Antigravity session', value: { tool: 'agy', model: 'gemini-4-hydrogen-low' } },
+          claude: { summary: 'Claude Code session', value: { tool: 'claude', model: 'claude-sonnet-4-6' } },
         }}},
       },
       responses: {
-        201: { description: 'Session berhasil dibuat', content: { 'application/json': { schema: {
+        201: { description: 'Session created', content: { 'application/json': { schema: {
           type: 'object',
           properties: {
             session_id: { type: 'string', format: 'uuid' },
@@ -459,27 +458,27 @@ swaggerSpec.paths = {
             model:      { type: 'string' },
           },
         }}}},
-        400: { description: 'tool tidak valid', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        400: { description: 'Invalid tool value', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
     get: {
       tags: ['Sessions'],
-      summary: 'List sesi milik user',
+      summary: 'List sessions for the authenticated user',
       description: [
-        'Mengembalikan semua sesi milik user yang terautentikasi, diurutkan dari yang terbaru.',
+        'Returns all sessions belonging to the authenticated user, sorted by most recent.',
         '',
-        '**Isolasi user:** Setiap API key hanya melihat sesinya sendiri.',
-        'Sesi lama tanpa tag user (dibuat sebelum fitur multi-user) tetap tampil untuk semua user.',
+        '**User isolation:** Each API key only sees its own sessions.',
+        'Legacy sessions created before multi-user support was added are visible to all users.',
       ].join('\n'),
       parameters: [
-        { name: 'limit',  in: 'query', schema: { type: 'integer', default: 20, maximum: 200 }, description: 'Jumlah item per halaman.' },
-        { name: 'offset', in: 'query', schema: { type: 'integer', default: 0 }, description: 'Skip N item pertama.' },
-        { name: 'q',      in: 'query', schema: { type: 'string' }, description: 'Filter berdasarkan title atau preview.' },
+        { name: 'limit',  in: 'query', schema: { type: 'integer', default: 20, maximum: 200 }, description: 'Number of items per page.' },
+        { name: 'offset', in: 'query', schema: { type: 'integer', default: 0 }, description: 'Skip first N items.' },
+        { name: 'q',      in: 'query', schema: { type: 'string' }, description: 'Filter by title or preview text.' },
       ],
       responses: {
         200: {
-          description: 'Daftar sesi',
+          description: 'List of sessions',
           content: { 'application/json': { schema: {
             type: 'object',
             properties: {
@@ -497,28 +496,28 @@ swaggerSpec.paths = {
   '/sessions/{id}': {
     get: {
       tags: ['Sessions'],
-      summary: 'Detail satu sesi',
+      summary: 'Get session details',
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
       ],
       responses: {
-        200: { description: 'Detail sesi', content: { 'application/json': { schema: { $ref: '#/components/schemas/Session' } } } },
+        200: { description: 'Session detail', content: { 'application/json': { schema: { $ref: '#/components/schemas/Session' } } } },
         401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        403: { description: 'Sesi milik user lain', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        404: { description: 'Tidak ditemukan', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        403: { description: 'Session belongs to another user', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        404: { description: 'Not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
   },
   '/sessions/{id}/tool': {
     get: {
       tags: ['Sessions'],
-      summary: 'Tool & model yang dipakai di sesi ini',
+      summary: 'Get the tool & model used in this session',
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
       ],
       responses: {
         200: {
-          description: 'Info tool sesi',
+          description: 'Session tool info',
           content: { 'application/json': { schema: {
             type: 'object',
             properties: {
@@ -528,21 +527,21 @@ swaggerSpec.paths = {
           }}},
         },
         401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        403: { description: 'Sesi milik user lain', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        403: { description: 'Session belongs to another user', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
   },
   '/sessions/{id}/messages': {
     get: {
       tags: ['Sessions'],
-      summary: 'Transcript pesan sesi',
-      description: 'Mengembalikan semua pesan (user & assistant) dari sesi ini. Mendukung sesi agy maupun Claude.',
+      summary: 'Get conversation transcript',
+      description: 'Returns all messages (user & assistant) for this session. Supports both agy and Claude sessions.',
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
       ],
       responses: {
         200: {
-          description: 'Daftar pesan',
+          description: 'List of messages',
           content: { 'application/json': { schema: {
             type: 'object',
             properties: {
@@ -550,9 +549,9 @@ swaggerSpec.paths = {
             },
           }}},
         },
-        400: { description: 'ID sesi tidak valid', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        400: { description: 'Invalid session ID', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        403: { description: 'Sesi milik user lain', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        403: { description: 'Session belongs to another user', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
   },
@@ -563,7 +562,7 @@ swaggerSpec.paths = {
       security: [],
       responses: {
         200: {
-          description: 'Server aktif',
+          description: 'Server is running',
           content: { 'application/json': { schema: { type: 'object', properties: {
             status: { type: 'string', example: 'ok' },
             agy:    { type: 'string', example: '/usr/local/bin/agy' },
@@ -576,24 +575,24 @@ swaggerSpec.paths = {
   '/models': {
     get: {
       tags: ['1. Tool & Model'],
-      summary: 'List model per tool',
+      summary: 'List available models',
       description: [
-        '**Step 1 dari flow:** Ambil daftar model yang tersedia untuk setiap tool.',
+        '**Step 1:** Fetch available models for each tool.',
         '',
-        '- `GET /models?tool=agy` → model Antigravity (Gemini, Claude via Google, GPT)',
-        '- `GET /models?tool=claude` → model Claude Code (Anthropic Claude)',
-        '- `GET /models` → semua tool sekaligus',
+        '- `GET /models?tool=agy` → Antigravity models (Gemini, Claude via Google, GPT)',
+        '- `GET /models?tool=claude` → Claude Code models (Anthropic Claude)',
+        '- `GET /models` → all tools at once',
       ].join('\n'),
       parameters: [
-        { name: 'tool', in: 'query', schema: { type: 'string', enum: ['agy', 'claude'] }, description: '`agy` = Antigravity CLI, `claude` = Claude Code CLI. Kosong = return semua.' },
+        { name: 'tool', in: 'query', schema: { type: 'string', enum: ['agy', 'claude'] }, description: '`agy` = Antigravity CLI, `claude` = Claude Code CLI. Omit to return all.' },
       ],
       responses: {
         200: {
-          description: 'Daftar model',
+          description: 'List of models',
           content: { 'application/json': { schema: {
             oneOf: [
               {
-                title: 'Response dengan ?tool=agy atau ?tool=claude',
+                title: 'Response with ?tool=agy or ?tool=claude',
                 type: 'object',
                 properties: {
                   tool: { type: 'string', example: 'agy' },
@@ -601,7 +600,7 @@ swaggerSpec.paths = {
                 },
               },
               {
-                title: 'Response tanpa filter (semua tool)',
+                title: 'Response without filter (all tools)',
                 type: 'object',
                 properties: {
                   tools: {
@@ -620,147 +619,147 @@ swaggerSpec.paths = {
   '/chat': {
     post: {
       tags: ['2. Chat'],
-      summary: 'Sesi baru — kirim prompt',
+      summary: 'New session — send a prompt',
       description: [
-        '**Step 2 dari flow:** Mulai sesi baru dengan tool dan model pilihan.',
+        '**Step 2:** Start a new session with your chosen tool and model.',
         '',
-        '### Pilih Tool',
-        '| `tool` | LLM | Cocok untuk |',
-        '|--------|-----|-------------|',
-        '| `agy` _(default)_ | Antigravity CLI | Chat umum, gambar, web search, multi-model |',
-        '| `claude` | Claude Code CLI | Coding, debugging, review, software dev |',
+        '### Choose a Tool',
+        '| `tool` | LLM | Best for |',
+        '|--------|-----|----------|',
+        '| `agy` _(default)_ | Antigravity CLI | General chat, images, web search, multi-model |',
+        '| `claude` | Claude Code CLI | Coding, debugging, code review, software dev |',
         '',
         '### Model',
-        'Gunakan `id` dari `GET /models?tool=<tool>` sebagai nilai `model`.',
+        'Use the `id` from `GET /models?tool=<tool>` as the `model` value.',
         '',
         '### Response',
-        '- **Non-streaming** (`stream: false`): satu JSON response, berisi `session_id` dan `tool_used`.',
-        '- **Streaming** (`stream: true`): SSE — event `init`, `step_update` (stream teks), `result`, `error`.',
+        '- **Non-streaming** (`stream: false`): single JSON response with `session_id` and `tool_used`.',
+        '- **Streaming** (`stream: true`): SSE — events `init`, `step_update` (token stream), `result`, `error`.',
         '',
-        'Simpan `session_id` dari response untuk melanjutkan sesi di `POST /sessions/{session_id}/chat`.',
+        'Save `session_id` from the response to continue the session at `POST /sessions/{session_id}/chat`.',
       ].join('\n'),
       requestBody: {
         required: true,
         content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatRequest' },
           examples: {
             agy_gemini: {
-              summary: 'Chat dengan Antigravity (Gemini)',
-              value: { prompt: 'Jelaskan apa itu Docker.', tool: 'agy', model: 'gemini-4-hydrogen-low', stream: false },
+              summary: 'Chat with Antigravity (Gemini)',
+              value: { prompt: 'Explain what Docker is.', tool: 'agy', model: 'gemini-4-hydrogen-low', stream: false },
             },
             claude_coding: {
-              summary: 'Coding dengan Claude Code',
-              value: { prompt: 'Bikin fungsi Python untuk merge dua sorted array.', tool: 'claude', model: 'claude-sonnet-4-6', stream: false },
+              summary: 'Coding with Claude Code',
+              value: { prompt: 'Write a Python function to merge two sorted arrays.', tool: 'claude', model: 'claude-sonnet-4-6', stream: false },
             },
             streaming: {
-              summary: 'Chat streaming (SSE)',
-              value: { prompt: 'Ceritakan sejarah singkat AI.', tool: 'agy', model: 'gemini-3.8-flash-low', stream: true },
+              summary: 'Streaming chat (SSE)',
+              value: { prompt: 'Give a brief history of AI.', tool: 'agy', model: 'gemini-3.8-flash-low', stream: true },
             },
           },
         }},
       },
       responses: {
         200: {
-          description: 'Sukses',
+          description: 'Success',
           content: {
             'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } },
             'text/event-stream': { schema: { $ref: '#/components/schemas/SseEvent' } },
           },
         },
-        400: { description: 'prompt wajib diisi', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        400: { description: 'prompt is required', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        500: { description: 'Error dari tool', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        500: { description: 'Tool error', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
   },
   '/chat/upload': {
     post: {
       tags: ['2. Chat'],
-      summary: 'Sesi baru — kirim prompt + gambar (multipart)',
-      description: 'Mulai sesi baru dengan gambar. Mendukung `agy` dan `claude` (Sonnet/Opus). Upload hingga 10 file (maks 20 MB/file), dihapus otomatis setelah request.',
+      summary: 'New session — send prompt + images (multipart)',
+      description: 'Start a new session with image attachments. Supports `agy` and `claude` (Sonnet/Opus). Up to 10 files (max 20 MB each), automatically deleted after the request.',
       requestBody: {
         required: true,
         content: { 'multipart/form-data': { schema: { $ref: '#/components/schemas/UploadRequest' } } },
       },
       responses: {
-        200: { description: 'Sukses', content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } } } },
-        400: { description: 'prompt wajib atau format file salah', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        200: { description: 'Success', content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } } } },
+        400: { description: 'prompt required or invalid file format', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        500: { description: 'Error dari tool', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        500: { description: 'Tool error', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
   },
   '/sessions/{session_id}/chat': {
     post: {
       tags: ['2. Chat'],
-      summary: 'Lanjut sesi — kirim prompt',
+      summary: 'Continue session — send a prompt',
       description: [
-        '**Step 3:** Lanjutkan percakapan yang sudah ada.',
+        '**Step 3:** Continue an existing conversation.',
         '',
-        'Tool yang dipakai **otomatis mengikuti sesi** (tidak perlu kirim `tool` lagi).',
-        'Field `tool` di body diabaikan untuk endpoint ini.',
+        'The tool **follows the session automatically** — no need to send `tool` again.',
+        'The `tool` field in the body is ignored for this endpoint.',
         '',
-        '> Hanya pemilik sesi (API key yang membuat sesi) yang bisa melanjutkannya.',
+        '> Only the session owner (the API key that created it) can continue a session.',
       ].join('\n'),
       parameters: [
-        { name: 'session_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, description: '`session_id` dari response `POST /chat` atau `POST /sessions`.' },
+        { name: 'session_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, description: '`session_id` from the `POST /chat` or `POST /sessions` response.' },
       ],
       requestBody: {
         required: true,
         content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatRequest' },
           examples: {
             continue: {
-              summary: 'Lanjut sesi (tool otomatis)',
-              value: { prompt: 'Bisa jelaskan lebih detail?', stream: false },
+              summary: 'Continue session (tool is automatic)',
+              value: { prompt: 'Can you explain that in more detail?', stream: false },
             },
           },
         }},
       },
       responses: {
         200: {
-          description: 'Sukses',
+          description: 'Success',
           content: {
             'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } },
             'text/event-stream': { schema: { $ref: '#/components/schemas/SseEvent' } },
           },
         },
-        400: { description: 'prompt wajib diisi', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        400: { description: 'prompt is required', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        403: { description: 'Sesi milik user lain', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        500: { description: 'Error dari tool', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        403: { description: 'Session belongs to another user', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        500: { description: 'Tool error', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
   },
   '/route': {
     post: {
       tags: ['3. Auto-Route'],
-      summary: 'Auto-route — LLM classifier pilihkan tool',
+      summary: 'Auto-route — let the LLM classifier pick the tool',
       description: [
-        'Alternatif dari `POST /chat`: kirim prompt, LLM classifier kecil (Gemini Flash) otomatis pilih tool terbaik.',
+        'Alternative to `POST /chat`: send a prompt and a small classifier (Gemini Flash) automatically picks the best tool.',
         '',
-        '**Kriteria routing:**',
-        '- `claude` → prompt tentang coding, debugging, refactor, code review, programming, software architecture',
-        '- `agy` → semua lainnya (pertanyaan umum, creative, chat, gambar, dll)',
+        '**Routing criteria:**',
+        '- `claude` → prompts about coding, debugging, refactoring, code review, programming, software architecture',
+        '- `agy` → everything else (general questions, creative, chat, images, etc.)',
         '',
-        'SSE streaming: event pertama selalu `{"event":"route","tool":"agy"|"claude"}` sebelum event lainnya.',
+        'SSE streaming: the first event is always `{"event":"route","tool":"agy"|"claude"}` before any other events.',
       ].join('\n'),
       requestBody: {
         required: true,
         content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatRequest' },
           examples: {
             coding: {
-              summary: 'Prompt coding → akan diroute ke claude',
-              value: { prompt: 'Bikin REST API dengan Express.js dan JWT auth.', stream: false },
+              summary: 'Coding prompt → will be routed to claude',
+              value: { prompt: 'Build a REST API with Express.js and JWT auth.', stream: false },
             },
             general: {
-              summary: 'Prompt umum → akan diroute ke agy',
-              value: { prompt: 'Apa perbedaan antara machine learning dan deep learning?', stream: false },
+              summary: 'General prompt → will be routed to agy',
+              value: { prompt: 'What is the difference between machine learning and deep learning?', stream: false },
             },
           },
         }},
       },
       responses: {
         200: {
-          description: 'Sukses — berisi `tool_used` untuk tahu tool yang dipilih',
+          description: 'Success — includes `tool_used` to identify the selected tool',
           content: {
             'application/json': { schema: { allOf: [{ $ref: '#/components/schemas/ChatResponse' }, { type: 'object', properties: { tool_used: { type: 'string', enum: ['agy', 'claude'], example: 'claude' } } }] } },
             'text/event-stream': { schema: { $ref: '#/components/schemas/SseEvent' } },
@@ -774,16 +773,16 @@ swaggerSpec.paths = {
   '/sessions/{session_id}/route': {
     post: {
       tags: ['3. Auto-Route'],
-      summary: 'Lanjut sesi dengan auto-route',
-      description: 'Lanjutkan sesi yang dimulai via `POST /route`. Tool otomatis mengikuti tool yang dipakai di sesi tersebut.',
+      summary: 'Continue session with auto-route',
+      description: 'Continue a session started via `POST /route`. The tool follows the tool used in that session.',
       parameters: [
         { name: 'session_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
       ],
       requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatRequest' } } } },
       responses: {
-        200: { description: 'Sukses', content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } } } },
+        200: { description: 'Success', content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } } } },
         401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        403: { description: 'Sesi milik user lain', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        403: { description: 'Session belongs to another user', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         500: { description: 'Error', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
@@ -791,45 +790,45 @@ swaggerSpec.paths = {
   '/sessions/{session_id}/chat/upload': {
     post: {
       tags: ['2. Chat'],
-      summary: 'Lanjut sesi — kirim prompt + gambar (multipart)',
-      description: 'Lanjutkan sesi dengan upload gambar. Mendukung `agy` dan `claude`. Untuk `claude`, gunakan model Sonnet/Opus (Haiku tidak mendukung vision).',
+      summary: 'Continue session — send prompt + images (multipart)',
+      description: 'Continue a session with image attachments. Supports `agy` and `claude`. For `claude`, use Sonnet or Opus (Haiku does not support vision).',
       parameters: [
-        { name: 'session_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, description: 'ID sesi dari response `POST /chat` atau `POST /sessions`.' },
+        { name: 'session_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, description: 'Session ID from `POST /chat` or `POST /sessions` response.' },
       ],
       requestBody: {
         required: true,
         content: { 'multipart/form-data': { schema: { $ref: '#/components/schemas/UploadRequest' } } },
       },
       responses: {
-        200: { description: 'Sukses', content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } } } },
-        400: { description: 'prompt wajib atau format file salah', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        200: { description: 'Success', content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } } } },
+        400: { description: 'prompt required or invalid file format', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        403: { description: 'Sesi milik user lain', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        500: { description: 'Error dari tool', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        403: { description: 'Session belongs to another user', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        500: { description: 'Tool error', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
   },
   '/apps': {
     post: {
       tags: ['4. Apps'],
-      summary: 'Buat app baru',
-      description: 'Hanya bisa dipanggil dengan `ADMIN_KEY`. Response berisi `api_key` yang dipakai app untuk request.',
+      summary: 'Create a new app',
+      description: 'Requires `ADMIN_KEY`. Response includes the `api_key` the app uses for requests.',
       requestBody: { required: true, content: { 'application/json': { schema: {
         type: 'object', required: ['name'],
         properties: { name: { type: 'string', example: 'Mobile App v1' } },
       }}}},
       responses: {
-        201: { description: 'App berhasil dibuat', content: { 'application/json': { schema: { $ref: '#/components/schemas/App' } } } },
-        400: { description: 'name wajib diisi', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        201: { description: 'App created', content: { 'application/json': { schema: { $ref: '#/components/schemas/App' } } } },
+        400: { description: 'name is required', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         403: { description: 'Admin key required', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
     get: {
       tags: ['4. Apps'],
-      summary: 'List semua app',
-      description: 'Hanya bisa dipanggil dengan `ADMIN_KEY`.',
+      summary: 'List all apps',
+      description: 'Requires `ADMIN_KEY`.',
       responses: {
-        200: { description: 'Daftar app', content: { 'application/json': { schema: {
+        200: { description: 'List of apps', content: { 'application/json': { schema: {
           type: 'object',
           properties: {
             total: { type: 'integer' },
@@ -843,56 +842,56 @@ swaggerSpec.paths = {
   '/apps/{app_id}': {
     get: {
       tags: ['4. Apps'],
-      summary: 'Detail app',
-      description: 'Admin atau app itu sendiri.',
+      summary: 'Get app details',
+      description: 'Accessible by admin or the app itself.',
       parameters: [{ name: 'app_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
       responses: {
-        200: { description: 'Detail app', content: { 'application/json': { schema: { $ref: '#/components/schemas/App' } } } },
+        200: { description: 'App detail', content: { 'application/json': { schema: { $ref: '#/components/schemas/App' } } } },
         403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        404: { description: 'App tidak ditemukan', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        404: { description: 'App not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
     delete: {
       tags: ['4. Apps'],
-      summary: 'Hapus app beserta semua user-nya',
-      description: 'Hanya admin. Semua user dalam app ini ikut dihapus.',
+      summary: 'Delete app and all its users',
+      description: 'Admin only. All users belonging to this app are also deleted.',
       parameters: [{ name: 'app_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
       responses: {
-        200: { description: 'Berhasil dihapus', content: { 'application/json': { schema: { type: 'object', properties: { deleted: { type: 'boolean' } } } } } },
+        200: { description: 'Deleted successfully', content: { 'application/json': { schema: { type: 'object', properties: { deleted: { type: 'boolean' } } } } } },
         403: { description: 'Admin key required', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        404: { description: 'App tidak ditemukan', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        404: { description: 'App not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
   },
   '/apps/{app_id}/users': {
     post: {
       tags: ['5. Users'],
-      summary: 'Buat user baru dalam app',
-      description: 'Admin atau app itu sendiri. Response `user_id` dipakai di header `X-User-Id` saat request chat.',
+      summary: 'Create a new user in an app',
+      description: 'Accessible by admin or the app itself. The returned `user_id` is used in the `X-User-Id` header on chat requests.',
       parameters: [{ name: 'app_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
       requestBody: { required: true, content: { 'application/json': { schema: {
         type: 'object', required: ['name'],
         properties: {
           name:        { type: 'string', example: 'John Doe' },
-          external_id: { type: 'string', nullable: true, description: 'ID dari sistem eksternal, opsional. Harus unik per app.', example: 'user-123' },
+          external_id: { type: 'string', nullable: true, description: 'ID from your external system. Optional, must be unique per app.', example: 'user-123' },
         },
       }, examples: {
-        minimal:  { summary: 'Hanya nama', value: { name: 'Alice' } },
-        with_ext: { summary: 'Dengan external_id', value: { name: 'Bob', external_id: 'uid-456' } },
+        minimal:  { summary: 'Name only', value: { name: 'Alice' } },
+        with_ext: { summary: 'With external_id', value: { name: 'Bob', external_id: 'uid-456' } },
       }}}},
       responses: {
-        201: { description: 'User berhasil dibuat', content: { 'application/json': { schema: { $ref: '#/components/schemas/User' } } } },
-        400: { description: 'name wajib diisi', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        201: { description: 'User created', content: { 'application/json': { schema: { $ref: '#/components/schemas/User' } } } },
+        400: { description: 'name is required', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        409: { description: 'external_id sudah ada di app ini', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        409: { description: 'external_id already exists in this app', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
     get: {
       tags: ['5. Users'],
-      summary: 'List users dalam app',
+      summary: 'List users in an app',
       parameters: [{ name: 'app_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
       responses: {
-        200: { description: 'Daftar user', content: { 'application/json': { schema: {
+        200: { description: 'List of users', content: { 'application/json': { schema: {
           type: 'object',
           properties: {
             total: { type: 'integer' },
@@ -900,35 +899,35 @@ swaggerSpec.paths = {
           },
         }}}},
         403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        404: { description: 'App tidak ditemukan', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        404: { description: 'App not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
   },
   '/apps/{app_id}/users/{user_id}': {
     get: {
       tags: ['5. Users'],
-      summary: 'Detail user',
+      summary: 'Get user details',
       parameters: [
         { name: 'app_id',  in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
         { name: 'user_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
       ],
       responses: {
-        200: { description: 'Detail user', content: { 'application/json': { schema: { $ref: '#/components/schemas/User' } } } },
+        200: { description: 'User detail', content: { 'application/json': { schema: { $ref: '#/components/schemas/User' } } } },
         403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        404: { description: 'User tidak ditemukan', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        404: { description: 'User not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
     delete: {
       tags: ['5. Users'],
-      summary: 'Hapus user',
+      summary: 'Delete a user',
       parameters: [
         { name: 'app_id',  in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
         { name: 'user_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
       ],
       responses: {
-        200: { description: 'Berhasil dihapus', content: { 'application/json': { schema: { type: 'object', properties: { deleted: { type: 'boolean' } } } } } },
+        200: { description: 'Deleted successfully', content: { 'application/json': { schema: { type: 'object', properties: { deleted: { type: 'boolean' } } } } } },
         403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        404: { description: 'User tidak ditemukan', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        404: { description: 'User not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
       },
     },
   },
