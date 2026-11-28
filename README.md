@@ -23,9 +23,9 @@ AGY AI Gateway wraps two powerful AI CLI tools — **Google Antigravity** (`agy`
 
 - Access Gemini, Claude, and GPT models through a single endpoint
 - Stream responses in real time via Server-Sent Events
-- Persist and resume conversations across sessions
-- Issue separate API keys per app/team without exposing CLI credentials
-- Monitor your remaining quota for both backends from one place
+- Persist and resume conversations automatically per app
+- Issue separate API keys per user without exposing CLI credentials
+- Monitor remaining quota for both backends from one place
 
 ---
 
@@ -33,15 +33,15 @@ AGY AI Gateway wraps two powerful AI CLI tools — **Google Antigravity** (`agy`
 
 | Category | Details |
 |---|---|
-| **LLM Backends** | Antigravity (Gemini 4, Gemini 3.8 Flash, Claude via Google, GPT-OSS 120B) + Claude Code (Opus 4.8, Sonnet 4.6, Haiku 4.5) |
+| **LLM Backends** | Antigravity (Gemini 2.5 Pro/Flash, Gemini 2.0 Flash, Claude/GPT via Google) + Claude Code (Opus 4.8, Sonnet 4.6, Haiku 4.5) |
 | **Streaming** | Server-Sent Events (SSE) with real-time token deltas |
-| **Sessions** | Persistent conversations, resumable by session ID |
-| **Multi-tenancy** | App registration + per-user auth isolation |
+| **Sessions** | Persistent conversations per app — auto-resumed on next chat |
+| **Multi-tenancy** | Per-user API keys + app scoping via `X-App-Id` |
 | **Image Uploads** | Multipart form uploads with vision support on both backends |
 | **Auto-routing** | LLM-driven backend selection (`/route` endpoint) |
 | **Dashboard** | Full-featured web UI — chat, sessions, app/user management |
 | **API Docs** | Interactive Swagger UI at `/docs` |
-| **Quota Monitoring** | Live remaining quota bars for Claude and AGY in the sidebar |
+| **Quota Monitoring** | Live remaining quota for Claude and AGY via `/usage` |
 
 ---
 
@@ -52,33 +52,27 @@ AGY AI Gateway wraps two powerful AI CLI tools — **Google Antigravity** (`agy`
                         │      AGY AI Gateway          │
   Browser / Client ───▶ │          :3986               │
                         │                              │
-                        │  GET /dashboard ──▶ proxy ──▶│──▶ Dashboard UI (internal)
+                        │  GET /dashboard ──▶ proxy ──▶│──▶ Dashboard UI (port 3000)
                         │  GET /docs      ──▶ Swagger  │
-                        │  POST /chat     ──────────── │──▶  agy CLI (Gemini, GPT…)
+                        │  POST /chat     ──────────── │──▶  agy CLI  (Gemini, GPT…)
                         │  POST /route    ──────────── │──▶  claude CLI (Anthropic)
-                        │  GET  /sessions ──────────── │──▶  local session store
                         │  POST /apps     ──────────── │──▶  apps.json
+                        │  POST /users    ──────────── │──▶  users.json
                         └──────────────────────────────┘
 ```
 
-A single port serves everything. The dashboard container runs internally and is proxied through the API — no extra ports needed.
+A single port serves everything. The dashboard container runs on port 3000 internally and is proxied — no extra ports exposed.
 
 ---
 
 ## Installation Guide
 
-This section walks through installing every dependency from scratch on a fresh Linux server (Ubuntu/Debian).
-
 ### Step 1 — Install Docker
 
 ```bash
-# Install Docker
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER
 newgrp docker
-
-# Verify
-docker --version
 docker compose version
 ```
 
@@ -86,60 +80,39 @@ docker compose version
 
 ```bash
 # Requires Node.js 18+
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-# Install claude globally
 npm install -g @anthropic-ai/claude-code
 
 # Authenticate (opens browser login)
 claude login
-
-# Verify
 claude --version
 ```
 
 ### Step 3 — Install Google Antigravity CLI (agy)
 
 ```bash
-# Download the agy binary (replace URL with the latest release)
+# Download binary
 curl -L https://dl.google.com/antigravity/agy-linux-amd64 -o ~/.local/bin/agy
 chmod +x ~/.local/bin/agy
 
 # Authenticate
 agy login
-
-# Verify
 agy --version
 ```
-
-> **Note:** The exact download URL for `agy` may vary. Check [developers.google.com/antigravity](https://developers.google.com/antigravity) for the latest installer.
 
 ### Step 4 — Verify both CLIs work
 
 ```bash
-# Test agy
 agy --print "say hello" --output-format json
-
-# Test claude
-claude --print "say hello" --output-format json
+claude -p "say hello" --output-format json
 ```
 
-Both commands should return a JSON response. If either fails, re-authenticate (`agy login` / `claude login`) before proceeding.
+Both commands should return a JSON response. Re-authenticate (`agy login` / `claude login`) if either fails.
 
 ---
 
 ## Quick Start
 
-### Prerequisites
-
-| Requirement | Notes |
-|---|---|
-| Docker & Docker Compose | v2+ — see [Installation Guide](#installation-guide) |
-| [`agy`](https://developers.google.com/antigravity) | Installed and authenticated on the host |
-| [`claude`](https://github.com/anthropics/claude-code) | Installed and authenticated on the host |
-
-### 1. Clone the repository
+### 1. Clone
 
 ```bash
 git clone https://github.com/kikilcmh/AI-CLI-OPEN-API-SWAGGER-.git
@@ -148,20 +121,14 @@ cd AI-CLI-OPEN-API-SWAGGER-
 
 ### 2. Create `.env`
 
-```bash
-cp .env.example .env
-```
-
 ```env
 PORT=3986
-
-# At least one auth method is required
-API_KEYS=your-legacy-api-key        # comma-separated for multiple keys
-ADMIN_KEY=your-admin-key            # required for app/user management
+ADMIN_KEY=your-secret-admin-key
 
 # Optional
 CORS_ORIGIN=*
 AGY_SKIP_PERMISSIONS=1
+AGY_CWD=/home/youruser
 ```
 
 ### 3. Update volume paths in `docker-compose.yml`
@@ -191,45 +158,40 @@ docker compose up -d
 
 ## Authentication
 
-Three auth modes are supported, evaluated in order on every request:
+Every request (except `/health` and `/docs`) requires an `X-Api-Key` header. Two modes:
 
 ### Admin Key
-Full access — can create/delete apps and users, see all sessions.
+
+Full access — create/delete apps and users, see all data.
 
 ```
 X-Api-Key: <ADMIN_KEY>
 ```
 
-### App + User Key
-Scoped access — sessions are isolated per app and user.
+### User Key
+
+Scoped to that user's apps. Add `X-App-Id` to target a specific app's session.
 
 ```
-X-Api-Key: <app_api_key>
-X-User-Id: <user_id>
+X-Api-Key: <user api_key>
+X-App-Id: <app_id>       ← required for /chat
 ```
 
-### Legacy Key
-Single-user access via `API_KEYS` env variable. Used by the dashboard.
-
-```
-X-Api-Key: <API_KEYS value>
-```
-
-> If no auth is configured, the API runs open (no key required).
+> User keys are generated when you create a user via `POST /users` (admin only).
 
 ---
 
 ## API Reference
 
-Full interactive documentation is available at `/docs`. Below is a quick reference.
+Full interactive documentation is available at `/docs` (Swagger UI).
 
 ### Chat
 
-Start or continue a conversation.
+Send a prompt to an app's AI session. The session persists automatically — the first message creates it, subsequent messages resume it.
 
 ```
 POST /chat
-POST /sessions/{session_id}/chat
+POST /chat/upload        ← multipart: attach images
 ```
 
 **Request body:**
@@ -237,8 +199,7 @@ POST /sessions/{session_id}/chat
 ```json
 {
   "prompt": "Explain how transformers work",
-  "tool": "agy",
-  "model": "gemini-2.5-pro",
+  "model": "gemini-2.5-flash",
   "stream": true
 }
 ```
@@ -246,110 +207,120 @@ POST /sessions/{session_id}/chat
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `prompt` | string | ✓ | Your message |
-| `tool` | string | ✓ | `agy` or `claude` |
-| `model` | string | — | Model ID from `/models`. Uses server default if omitted |
+| `model` | string | — | Override the app's model for this request |
+| `effort` | string | — | `low`, `medium`, `high` — reasoning effort (agy) |
 | `stream` | boolean | — | Enable SSE streaming (default `false`) |
+
+**Headers required for chat:**
+
+```
+X-Api-Key: <user_api_key>
+X-App-Id:  <app_id>
+```
+
+or use the admin key with `X-App-Id`.
 
 ---
 
 ### Auto-routing
 
-Let the LLM decide which backend to use.
+Let the LLM decide which backend to use (`agy` for general tasks, `claude` for coding).
 
 ```
 POST /route
-POST /sessions/{session_id}/route
 ```
 
-Same request body as `/chat`. Returns an extra SSE event `route` indicating which tool was selected.
+Same body as `/chat`. Streaming response includes an extra `route` SSE event indicating the selected tool.
 
 ---
 
-### Sessions
+### Apps
 
 ```http
-GET    /sessions                     # List all sessions (paginated)
-GET    /sessions/{id}                # Session metadata
-GET    /sessions/{id}/messages       # Full conversation history
-GET    /sessions/{id}/tool           # Which tool/model this session uses
-DELETE /sessions/{id}                # Delete session
+GET    /apps                     # List your apps (admin sees all)
+POST   /apps                     # Create app
+GET    /apps/{app_id}            # App detail
+DELETE /apps/{app_id}            # Delete app
+GET    /apps/{app_id}/messages   # Conversation history
 ```
 
-**Query params for `GET /sessions`:**
+**POST /apps body:**
 
-| Param | Default | Description |
-|---|---|---|
-| `limit` | `20` | Max results (up to 200) |
-| `offset` | `0` | Pagination offset |
-| `q` | — | Full-text search on title and preview |
+```json
+{ "name": "My Bot", "tool": "agy", "model": "gemini-2.5-flash" }
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | ✓ | Display name |
+| `tool` | string | ✓ | `agy` or `claude` |
+| `model` | string | — | Model ID — see [Models](#models) |
+
+**Response (201):**
+
+```json
+{
+  "app_id": "uuid",
+  "name": "My Bot",
+  "owner_user_id": "uuid",
+  "tool": "agy",
+  "model": "gemini-2.5-flash",
+  "session_id": null,
+  "created_at": "2026-11-29T..."
+}
+```
+
+---
+
+### Users *(admin only)*
+
+```http
+POST   /users                    # Create user → returns api_key
+GET    /users                    # List all users
+GET    /users/me                 # Current user info (non-admin)
+DELETE /users/{user_id}          # Delete user + all their apps
+```
+
+**POST /users body:**
+
+```json
+{ "name": "Alice", "external_id": "alice_123" }
+```
+
+**Response (201):**
+
+```json
+{
+  "user_id": "uuid",
+  "name": "Alice",
+  "api_key": "...",
+  "external_id": "alice_123",
+  "created_at": "2026-11-29T..."
+}
+```
+
+> Give the `api_key` to the user — they use it as `X-Api-Key` for all their requests.
 
 ---
 
 ### Models
 
 ```http
-GET /models?tool=agy      # Antigravity models
-GET /models?tool=claude   # Claude Code models
+GET /models              # Both backends
+GET /models?tool=agy     # Antigravity models only
+GET /models?tool=claude  # Claude Code models only
 ```
 
 **Available models:**
 
-<table>
-<tr><th>Backend</th><th>Model</th></tr>
-<tr><td rowspan="10"><strong>AGY</strong><br>(Antigravity)</td><td>Gemini 4 Hydrogen (High / XHigh / Medium / Low)</td></tr>
-<tr><td>Gemini 3.8 Flash (High / Medium / Low)</td></tr>
-<tr><td>Claude Sonnet 4.6 (Thinking)</td></tr>
-<tr><td>Claude Opus 4.6 (Thinking)</td></tr>
-<tr><td>GPT-OSS 120B (Medium)</td></tr>
-<tr><td colspan="1"></td></tr>
-<tr><td rowspan="4"><strong>Claude</strong><br>(Anthropic)</td><td>Claude Opus 4.8</td></tr>
-<tr><td>Claude Sonnet 4.6</td></tr>
-<tr><td>Claude Haiku 4.5</td></tr>
-</table>
+| Backend | Model IDs |
+|---|---|
+| **AGY** (Antigravity) | `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.0-flash` + others from CLI |
+| **Claude** (Anthropic) | `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001` |
 
 ---
 
-### Apps & Users *(admin only)*
-
-**Apps:**
-
-```http
-POST   /apps                   # Create app → returns api_key
-GET    /apps                   # List all apps
-GET    /apps/{app_id}          # App detail
-DELETE /apps/{app_id}          # Delete app and all its users
-```
-
-```json
-// POST /apps
-{ "name": "My Mobile App" }
-
-// Response
-{
-  "app_id": "uuid",
-  "name": "My Mobile App",
-  "api_key": "...",
-  "created_at": "2026-01-01T00:00:00Z"
-}
-```
-
-**Users:**
-
-```http
-POST   /apps/{app_id}/users              # Create user
-GET    /apps/{app_id}/users              # List users
-GET    /apps/{app_id}/users/{user_id}    # User detail
-DELETE /apps/{app_id}/users/{user_id}    # Delete user
-```
-
-```json
-// POST /apps/{app_id}/users
-{ "name": "Alice", "external_id": "alice_123" }
-```
-
----
-
-### Quota
+### Usage / Quota
 
 ```http
 GET /usage
@@ -366,11 +337,7 @@ Returns remaining quota from both CLIs:
   "agy": [
     {
       "name": "Gemini Models",
-      "buckets": [{ "remainingPct": 68, "resetAt": "2026-12-01T15:01:08Z" }]
-    },
-    {
-      "name": "Claude and GPT models",
-      "buckets": [{ "remainingPct": 100, "resetAt": "2026-11-27T17:57:24Z" }]
+      "buckets": [{ "remainingPct": 68, "resetAt": "2026-12-01T15:00:00Z" }]
     }
   ]
 }
@@ -380,13 +347,14 @@ Returns remaining quota from both CLIs:
 
 ## Streaming
 
-All `/chat` and `/route` endpoints stream via Server-Sent Events when `stream: true`.
+All `/chat` and `/route` endpoints support Server-Sent Events when `stream: true`.
 
 ```bash
 curl -N -X POST http://localhost:3986/chat \
-  -H "X-Api-Key: your-key" \
+  -H "X-Api-Key: your-user-key" \
+  -H "X-App-Id: your-app-id" \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "Hello", "tool": "agy", "stream": true}'
+  -d '{"prompt": "Hello", "stream": true}'
 ```
 
 **SSE event types:**
@@ -395,7 +363,7 @@ curl -N -X POST http://localhost:3986/chat \
 |---|---|---|
 | `init` | `{ conversation_id }` | Session started |
 | `step_update` | `{ text_delta }` or `{ tool_name, state }` | Token delta or tool activity |
-| `result` | `{ session_id, … }` | Final result |
+| `result` | `{ session_id, response, … }` | Final result |
 | `route` | `{ tool }` | *(auto-route only)* Selected backend |
 | `error` | `{ error }` | Error occurred |
 
@@ -403,14 +371,13 @@ curl -N -X POST http://localhost:3986/chat \
 
 ## Image Uploads
 
-Attach images to any chat endpoint via multipart form:
+Attach images via multipart to the vision endpoint:
 
 ```bash
 curl -X POST http://localhost:3986/chat/upload \
-  -H "X-Api-Key: your-key" \
+  -H "X-Api-Key: your-user-key" \
+  -H "X-App-Id: your-app-id" \
   -F "prompt=What is in this image?" \
-  -F "tool=agy" \
-  -F "model=gemini-2.5-pro" \
   -F "images=@screenshot.png"
 ```
 
@@ -422,15 +389,15 @@ Both `agy` and `claude` backends support vision.
 
 Access at `http://localhost:3986/dashboard`
 
-<table>
-<tr><th>Section</th><th>Description</th></tr>
-<tr><td><strong>Overview</strong></td><td>API status, session count, available models with quick-launch</td></tr>
-<tr><td><strong>Sessions</strong></td><td>Browse, search, and resume all past sessions</td></tr>
-<tr><td><strong>New Chat</strong></td><td>Pick a backend and model, then start a conversation</td></tr>
-<tr><td><strong>Apps</strong></td><td>Create and manage apps; expand to view/add/delete users per app</td></tr>
-<tr><td><strong>API Docs</strong></td><td>Opens Swagger UI in a new tab</td></tr>
-<tr><td><strong>Quota (sidebar)</strong></td><td>Live remaining quota bars — Claude (weekly + session) and AGY (Gemini, Claude/GPT)</td></tr>
-</table>
+| Section | Description |
+|---|---|
+| **Overview** | API status, session count, available models |
+| **New Chat** | Pick backend and model, start a conversation |
+| **Sessions** | Browse and resume all past sessions |
+| **Apps** | Create and manage apps |
+| **Users** *(admin)* | Create and manage users |
+| **API Docs** | Opens Swagger UI |
+| **Quota** | Live remaining quota bars — Claude + AGY |
 
 ---
 
@@ -443,13 +410,12 @@ Access at `http://localhost:3986/dashboard`
 ├── docker-compose.yml       # Orchestration: API + dashboard
 ├── package.json
 ├── .env                     # Local config (not committed)
-├── .gitignore
 └── dashboard/
-    ├── server.js            # Lightweight proxy server (injects API key, serves static)
+    ├── server.js            # Lightweight proxy server (serves static + proxies /api)
     ├── Dockerfile
     ├── package.json
     └── public/
-        └── index.html       # Single-page dashboard (vanilla JS + Tailwind CDN)
+        └── index.html       # Single-page dashboard (vanilla JS)
 ```
 
 ---
@@ -459,13 +425,12 @@ Access at `http://localhost:3986/dashboard`
 | Variable | Required | Description |
 |---|---|---|
 | `PORT` | — | API port (default `3986`) |
-| `API_KEYS` | ✓* | Comma-separated legacy API keys |
-| `ADMIN_KEY` | ✓* | Admin key for app/user management |
+| `ADMIN_KEY` | ✓ | Admin key for user/app management |
 | `CORS_ORIGIN` | — | CORS allowed origin (default `*`) |
 | `AGY_SKIP_PERMISSIONS` | — | Skip agy permission prompts (`1` to enable) |
 | `AGY_CWD` | — | Working directory for agy file operations |
 
-*At least one of `API_KEYS` or `ADMIN_KEY` is recommended. Without either, the API runs open.
+> Without `ADMIN_KEY` the API runs open — anyone can call it.
 
 ---
 
