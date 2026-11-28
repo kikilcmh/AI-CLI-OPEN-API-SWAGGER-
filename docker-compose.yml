@@ -28,7 +28,7 @@ services:
     restart: unless-stopped
     environment:
       API_URL: http://agy-api:3986
-      API_KEY: ${API_KEYS}
+      API_KEY: ""
       ADMIN_KEY: ${ADMIN_KEY}
     depends_on:
       - agy-api

@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const { spawn } = require('child_process');
-const { randomUUID, createHash } = require('crypto');
+const { randomUUID } = require('crypto');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
@@ -16,27 +16,52 @@ const app = express();
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Api-Key, X-User-Id, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Api-Key, X-App-Id, Authorization');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 
 app.use(express.json({ limit: '50mb' }));
 
-const AGY_BIN = '/usr/local/bin/agy';
-const DEFAULT_CWD = process.env.AGY_CWD || process.env.HOME;
-const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(os.tmpdir(), 'agy-uploads');
-const METADATA_FILE = path.join(process.env.HOME, '.gemini', 'antigravity-cli', 'cache', 'conversation_metadata.json');
-const CACHE_DIR = path.join(process.env.HOME, '.gemini', 'antigravity-cli', 'cache');
-const APPS_FILE  = path.join(CACHE_DIR, 'apps.json');
-const USERS_FILE = path.join(CACHE_DIR, 'users.json');
+const AGY_BIN      = '/usr/local/bin/agy';
+const CLAUDE_BIN   = '/usr/bin/claude';
+const DEFAULT_CWD  = process.env.AGY_CWD || process.env.HOME;
+const UPLOAD_DIR   = process.env.UPLOAD_DIR || path.join(os.tmpdir(), 'agy-uploads');
+const CACHE_DIR    = path.join(process.env.HOME, '.gemini', 'antigravity-cli', 'cache');
+const USERS_FILE   = path.join(CACHE_DIR, 'users.json');
+const APPS_FILE    = path.join(CACHE_DIR, 'apps.json');
+const CLAUDE_PROJECTS_DIR = path.join(process.env.HOME, '.claude', 'projects', '-workspace');
 
-function loadApps()  { try { return JSON.parse(fs.readFileSync(APPS_FILE,  'utf8')); } catch { return {}; } }
-function saveApps(d) { fs.mkdirSync(CACHE_DIR, { recursive: true }); fs.writeFileSync(APPS_FILE,  JSON.stringify(d, null, 2)); }
-function loadUsers()  { try { return JSON.parse(fs.readFileSync(USERS_FILE,  'utf8')); } catch { return {}; } }
+// ---------------------------------------------------------------------------
+// Data helpers
+// ---------------------------------------------------------------------------
+
+function loadApps()   { try { return JSON.parse(fs.readFileSync(APPS_FILE,  'utf8')); } catch { return {}; } }
+function saveApps(d)  { fs.mkdirSync(CACHE_DIR, { recursive: true }); fs.writeFileSync(APPS_FILE,  JSON.stringify(d, null, 2)); }
+function loadUsers()  { try { return JSON.parse(fs.readFileSync(USERS_FILE, 'utf8')); } catch { return {}; } }
 function saveUsers(d) { fs.mkdirSync(CACHE_DIR, { recursive: true }); fs.writeFileSync(USERS_FILE, JSON.stringify(d, null, 2)); }
 
-function loadSessions() {
+function findUserByKey(key) {
+  if (!key) return null;
+  return Object.values(loadUsers()).find(u => u.api_key === key) || null;
+}
+
+function saveAppSession(appId, sessionId) {
+  if (!appId || !sessionId) return;
+  const apps = loadApps();
+  if (apps[appId] && !apps[appId].session_id) {
+    apps[appId].session_id = sessionId;
+    saveApps(apps);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session readers (internal — agy & claude)
+// ---------------------------------------------------------------------------
+
+const METADATA_FILE = path.join(CACHE_DIR, 'conversation_metadata.json');
+
+function loadAgySessions() {
   try {
     const raw = JSON.parse(fs.readFileSync(METADATA_FILE, 'utf8'));
     return Object.values(raw.conversations || {})
@@ -56,9 +81,6 @@ function loadSessions() {
   }
 }
 
-// Claude sessions are stored in ~/.claude/projects/-workspace/ (cwd inside docker = /workspace)
-const CLAUDE_PROJECTS_DIR = path.join(process.env.HOME, '.claude', 'projects', '-workspace');
-
 function loadClaudeSessions() {
   try {
     if (!fs.existsSync(CLAUDE_PROJECTS_DIR)) return [];
@@ -70,21 +92,15 @@ function loadClaudeSessions() {
       try {
         const stat = fs.statSync(fp);
         const lines = fs.readFileSync(fp, 'utf8').trim().split('\n').filter(Boolean);
-        let preview = '';
-        let title = '';
-        let updatedAt = stat.mtime.toISOString();
+        let preview = '', title = '', updatedAt = stat.mtime.toISOString();
         for (const line of lines) {
           try {
             const d = JSON.parse(line);
             if (d.type === 'user' && !preview) {
               const content = d.message?.content;
               if (Array.isArray(content)) {
-                for (const c of content) {
-                  if (c.type === 'text' && c.text) { preview = c.text; break; }
-                }
-              } else if (typeof content === 'string') {
-                preview = content;
-              }
+                for (const c of content) { if (c.type === 'text' && c.text) { preview = c.text; break; } }
+              } else if (typeof content === 'string') preview = content;
             }
             if (d.type === 'ai-title' && d.aiTitle) title = d.aiTitle;
             if (d.timestamp && d.timestamp > updatedAt) updatedAt = d.timestamp;
@@ -92,13 +108,12 @@ function loadClaudeSessions() {
         }
         sessions.push({
           session_id:    sessionId,
-          title:         title,
+          title,
           preview:       preview.slice(0, 200),
           num_steps:     Math.floor(lines.filter(l => { try { return JSON.parse(l).type === 'assistant'; } catch { return false; } }).length),
           updated_at:    updatedAt,
           last_modified: stat.mtime.toISOString(),
           workspace:     [DEFAULT_CWD],
-          _isClaude:     true,
         });
       } catch {}
     }
@@ -108,6 +123,10 @@ function loadClaudeSessions() {
     return [];
   }
 }
+
+// ---------------------------------------------------------------------------
+// File upload
+// ---------------------------------------------------------------------------
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -122,62 +141,41 @@ const upload = multer({
   storage,
   limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith('image/')) {
-      return cb(new Error(`Only image files are allowed, got: ${file.mimetype}`));
-    }
+    if (!file.mimetype.startsWith('image/')) return cb(new Error(`Only image files are allowed, got: ${file.mimetype}`));
     cb(null, true);
   },
 });
 
+// ---------------------------------------------------------------------------
 // Auth
-const ADMIN_KEY = process.env.ADMIN_KEY || null;
-const LEGACY_KEYS = process.env.API_KEYS
-  ? new Set(process.env.API_KEYS.split(',').map(k => k.trim()).filter(Boolean))
-  : null;
+// ---------------------------------------------------------------------------
 
-// Build reverse index: api_key → app_id (refreshed on each lookup for live updates)
-function findAppByKey(key) {
-  const apps = loadApps();
-  return Object.values(apps).find(a => a.api_key === key) || null;
-}
+const ADMIN_KEY = process.env.ADMIN_KEY || null;
 
 function authMiddleware(req, res, next) {
   const key = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
 
-  // Admin key
   if (ADMIN_KEY && key === ADMIN_KEY) {
     req.isAdmin = true;
     req.userId  = 'admin';
-    req.appId   = 'admin';
+    req.appId   = null;
     return next();
   }
 
-  // Legacy API keys (env API_KEYS) — backward compat
-  if (LEGACY_KEYS && key && LEGACY_KEYS.has(key)) {
-    req.userId = createHash('sha256').update(key).digest('hex').slice(0, 12);
-    req.appId  = 'legacy';
-    return next();
-  }
-
-  // App key
-  const app_ = key ? findAppByKey(key) : null;
-  if (app_) {
-    req.appId = app_.app_id;
-    const uid = req.headers['x-user-id'] || req.body?.user_id || null;
-    if (!uid) return res.status(400).json({ error: 'X-User-Id header required for app key auth' });
-    const users = loadUsers();
-    const user  = users[uid];
-    if (!user || user.app_id !== app_.app_id) {
-      return res.status(401).json({ error: 'Invalid user_id for this app' });
-    }
+  const user = findUserByKey(key);
+  if (user) {
     req.userId = user.user_id;
-    return next();
-  }
+    req.appId  = null;
 
-  // No auth configured — open
-  if (!ADMIN_KEY && !LEGACY_KEYS && Object.keys(loadApps()).length === 0) {
-    req.userId = 'anonymous';
-    req.appId  = 'legacy';
+    const appId = req.headers['x-app-id'];
+    if (appId) {
+      const apps = loadApps();
+      const appObj = apps[appId];
+      if (!appObj || appObj.owner_user_id !== user.user_id) {
+        return res.status(403).json({ error: 'App not found or not owned by this user' });
+      }
+      req.appId = appId;
+    }
     return next();
   }
 
@@ -189,11 +187,13 @@ function adminOnly(req, res, next) {
   next();
 }
 
-// App-level guard: admin OR the app itself
-function appGuard(req, res, next) {
+function appOwnerGuard(req, res, next) {
   if (req.isAdmin) return next();
-  if (req.appId === req.params.app_id) return next();
-  return res.status(403).json({ error: 'Forbidden' });
+  const apps = loadApps();
+  const appObj = apps[req.params.app_id];
+  if (!appObj) return res.status(404).json({ error: 'App not found' });
+  if (appObj.owner_user_id !== req.userId) return res.status(403).json({ error: 'Forbidden' });
+  next();
 }
 
 // ---------------------------------------------------------------------------
@@ -230,16 +230,16 @@ function httpProxy(targetBase, { reserializeBody = false } = {}) {
   };
 }
 
-// /dashboard → dashboard container (no auth needed, UI is public)
 app.use('/dashboard', (req, res, next) => {
   if (!req.url || req.url === '') req.url = '/';
   httpProxy('http://agy-dashboard:3000')(req, res, next);
 });
 
-// /api/* → self (strips /api prefix, re-serializes parsed JSON body)
 const SELF_PORT = process.env.PORT || 3986;
 app.use('/api', httpProxy(`http://localhost:${SELF_PORT}`, { reserializeBody: true }));
 
+// ---------------------------------------------------------------------------
+// Auth middleware (skip public routes)
 // ---------------------------------------------------------------------------
 
 app.use((req, res, next) => {
@@ -252,12 +252,13 @@ app.get('/', (req, res) => res.redirect('/dashboard'));
 // ---------------------------------------------------------------------------
 // Swagger
 // ---------------------------------------------------------------------------
+
 const swaggerSpec = swaggerJsdoc({
   definition: {
     openapi: '3.0.0',
     info: {
       title: 'AGY API',
-      version: '1.0.0',
+      version: '2.0.0',
       description: [
         '## AGY API — Multi-Model AI Gateway',
         '',
@@ -270,114 +271,66 @@ const swaggerSpec = swaggerJsdoc({
         '',
         '## Usage Flow',
         '',
-        '1. **List models** → `GET /models?tool=agy` or `GET /models?tool=claude`',
-        '2. **Start a session** → `POST /chat` with `tool` and `model` fields',
-        '3. **Continue session** → `POST /sessions/{session_id}/chat` (tool follows the session automatically)',
-        '4. **Auto-route** → `POST /route` — a small classifier (Gemini Flash) picks the best tool automatically',
+        '1. Admin creates a **User** → user receives their `api_key`',
+        '2. User creates an **App** → chooses tool & model → receives `app_id`',
+        '3. Each App has **one persistent CLI session** — chat continues automatically',
+        '4. Send `POST /chat` with `X-Api-Key` + `X-App-Id` to chat',
         '',
         '## Authentication',
         '',
-        'Three auth modes, evaluated in order:',
-        '',
-        '| Mode | Header | Use case |',
-        '|------|--------|----------|',
-        '| **Admin** | `X-Api-Key: <ADMIN_KEY>` | Manage apps & users |',
-        '| **App + User** | `X-Api-Key: <app_key>` + `X-User-Id: <user_id>` | Multi-user integration |',
-        '| **Legacy** | `X-Api-Key: <API_KEYS>` | Single-user / backward compat |',
-        '',
-        '## Multi-App & Multi-User',
-        '',
-        '1. Admin creates an App → receives `app_id` and `api_key`',
-        '2. App creates Users → receives `user_id` per user',
-        '3. Each request sends `X-Api-Key: <app_key>` + `X-User-Id: <user_id>`',
-        '4. Sessions are automatically isolated per `{app_id, user_id}`',
-        '',
-        '**Isolation:** Sessions are only accessible by the user who created them. Others → `403 Forbidden`.',
+        '| Header | Value | Required |',
+        '|--------|-------|----------|',
+        '| `X-Api-Key` | User API key or Admin key | Always |',
+        '| `X-App-Id` | App ID | For chat |',
       ].join('\n'),
     },
     components: {
       securitySchemes: {
         ApiKeyHeader: { type: 'apiKey', in: 'header', name: 'X-Api-Key' },
-        BearerToken: { type: 'http', scheme: 'bearer' },
+        AppIdHeader:  { type: 'apiKey', in: 'header', name: 'X-App-Id' },
       },
       schemas: {
+        User: {
+          type: 'object',
+          properties: {
+            user_id:     { type: 'string', format: 'uuid' },
+            name:        { type: 'string' },
+            api_key:     { type: 'string' },
+            external_id: { type: 'string', nullable: true },
+            created_at:  { type: 'string', format: 'date-time' },
+          },
+        },
+        App: {
+          type: 'object',
+          properties: {
+            app_id:         { type: 'string', format: 'uuid' },
+            name:           { type: 'string' },
+            owner_user_id:  { type: 'string', format: 'uuid' },
+            session_id:     { type: 'string', nullable: true, description: 'CLI session ID, created on first chat.' },
+            tool:           { type: 'string', enum: ['agy', 'claude'] },
+            model:          { type: 'string' },
+            created_at:     { type: 'string', format: 'date-time' },
+          },
+        },
         ChatRequest: {
           type: 'object',
           required: ['prompt'],
           properties: {
-            prompt:  { type: 'string', example: 'Explain what Docker is in one paragraph.' },
-            tool:    { type: 'string', enum: ['agy', 'claude'], default: 'agy', description: 'LLM backend to use. `agy` = Antigravity CLI (Gemini/GPT/Claude via Google), `claude` = Claude Code CLI (Anthropic). For existing sessions, the tool follows the session automatically.' },
-            model:   { type: 'string', example: 'gemini-4-hydrogen-low', description: 'Model ID from `GET /models?tool=agy` or `GET /models?tool=claude`.' },
-            effort:  { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], example: 'low', description: 'Effort level. Not all models support this (e.g. gemini-2.0-flash ignores effort).' },
-            stream:  { type: 'boolean', default: false, description: 'Enable Server-Sent Events (SSE) streaming.' },
-            images_base64: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Array of images — data URL (`data:image/png;base64,...`) or plain base64. Supported by both `agy` and `claude`. For `claude`, use Sonnet or Opus (Haiku does not support vision).',
-              example: ['data:image/png;base64,iVBORw0KGgo='],
-            },
-          },
-        },
-        UploadRequest: {
-          type: 'object',
-          required: ['prompt'],
-          properties: {
-            prompt:  { type: 'string', example: 'What is in this image?' },
-            model:   { type: 'string', example: 'gemini-4-hydrogen-low' },
+            prompt:  { type: 'string' },
+            model:   { type: 'string', description: 'Override the app\'s model for this request.' },
             effort:  { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
-            stream:  { type: 'string', enum: ['true', 'false'], default: 'false' },
-            images: {
-              type: 'array',
-              items: { type: 'string', format: 'binary' },
-              description: 'Image files (jpg, png, webp, etc.). Max 10 files, 20 MB each.',
-            },
+            stream:  { type: 'boolean', default: false },
+            images_base64: { type: 'array', items: { type: 'string' } },
           },
         },
         ChatResponse: {
           type: 'object',
           properties: {
-            session_id:      { type: 'string', format: 'uuid', description: 'Alias for conversation_id. Use this to continue the session in subsequent requests.' },
-            conversation_id: { type: 'string', format: 'uuid' },
-            status:          { type: 'string', enum: ['SUCCESS', 'ERROR'] },
-            response:        { type: 'string' },
-            error:           { type: 'string' },
-            duration_seconds:{ type: 'number' },
-            num_turns:       { type: 'integer' },
-            usage: {
-              type: 'object',
-              properties: {
-                input_tokens:       { type: 'integer' },
-                output_tokens:      { type: 'integer' },
-                thinking_tokens:    { type: 'integer' },
-                cache_read_tokens:  { type: 'integer' },
-                total_tokens:       { type: 'integer' },
-              },
-            },
-          },
-        },
-        SseEvent: {
-          type: 'object',
-          description: 'A single NDJSON line sent via SSE.',
-          properties: {
-            event: { type: 'string', enum: ['init', 'step_update', 'result', 'error'] },
-          },
-        },
-        ErrorResponse: {
-          type: 'object',
-          properties: { error: { type: 'string' } },
-        },
-        Session: {
-          type: 'object',
-          properties: {
-            session_id:    { type: 'string', format: 'uuid' },
-            title:         { type: 'string' },
-            preview:       { type: 'string', description: 'Snippet of the first message.' },
-            num_steps:     { type: 'integer' },
-            updated_at:    { type: 'string', format: 'date-time' },
-            last_modified: { type: 'string', format: 'date-time' },
-            workspace:     { type: 'array', items: { type: 'string' }, description: 'Working directories used in this session.' },
-            tool_used:     { type: 'string', enum: ['agy', 'claude'], description: 'Backend tool used in this session.' },
-            model_used:    { type: 'string', description: 'Model used when the session was created.' },
+            session_id:       { type: 'string' },
+            status:           { type: 'string', enum: ['SUCCESS', 'ERROR'] },
+            response:         { type: 'string' },
+            tool_used:        { type: 'string', enum: ['agy', 'claude'] },
+            duration_seconds: { type: 'number' },
           },
         },
         Message: {
@@ -387,30 +340,15 @@ const swaggerSpec = swaggerJsdoc({
             content: { type: 'string' },
           },
         },
+        ErrorResponse: {
+          type: 'object',
+          properties: { error: { type: 'string' } },
+        },
         Model: {
           type: 'object',
           properties: {
-            id:   { type: 'string', example: 'gemini-4-hydrogen-low' },
-            name: { type: 'string', example: 'Gemini 4 Hydrogen (Low)' },
-          },
-        },
-        App: {
-          type: 'object',
-          properties: {
-            app_id:     { type: 'string', format: 'uuid' },
-            name:       { type: 'string', example: 'Mobile App' },
-            api_key:    { type: 'string', description: 'Key used in the X-Api-Key header for this app.' },
-            created_at: { type: 'string', format: 'date-time' },
-          },
-        },
-        User: {
-          type: 'object',
-          properties: {
-            user_id:     { type: 'string', format: 'uuid' },
-            app_id:      { type: 'string', format: 'uuid' },
-            name:        { type: 'string', example: 'John Doe' },
-            external_id: { type: 'string', nullable: true, description: 'ID from your external system (optional, must be unique per app).' },
-            created_at:  { type: 'string', format: 'date-time' },
+            id:   { type: 'string' },
+            name: { type: 'string' },
           },
         },
       },
@@ -420,515 +358,181 @@ const swaggerSpec = swaggerJsdoc({
   apis: [],
 });
 
-// Inject route docs into spec
 swaggerSpec.paths = {
-  '/sessions': {
+  '/users': {
     post: {
-      tags: ['Sessions'],
-      summary: 'Pre-allocate a new session',
-      description: [
-        'Create a session ID before sending the first message. Useful for:',
-        '- Preparing a `session_id` on the client before chatting',
-        '- Locking in the tool & model upfront',
-        '',
-        'Continue the chat via `POST /sessions/{session_id}/chat`.',
-        '',
-        '> **Claude note:** This `session_id` is used for the first message only. After the first message,',
-        '> Claude generates its own session ID — use the `session_id` from the chat response to continue.',
-      ].join('\n'),
-      requestBody: {
-        required: false,
-        content: { 'application/json': { schema: {
-          type: 'object',
-          properties: {
-            tool:  { type: 'string', enum: ['agy', 'claude'], default: 'agy' },
-            model: { type: 'string', example: 'gemini-4-hydrogen-low', description: 'Model to use. Can be overridden at chat time.' },
-          },
-        }, examples: {
-          agy:    { summary: 'Antigravity session', value: { tool: 'agy', model: 'gemini-4-hydrogen-low' } },
-          claude: { summary: 'Claude Code session', value: { tool: 'claude', model: 'claude-sonnet-4-6' } },
-        }}},
-      },
+      tags: ['1. Users (Admin)'],
+      summary: 'Create a new user',
+      description: 'Admin only. Returns the user including their `api_key`.',
+      requestBody: { required: true, content: { 'application/json': { schema: {
+        type: 'object', required: ['name'],
+        properties: { name: { type: 'string' }, external_id: { type: 'string', nullable: true } },
+      }}}},
       responses: {
-        201: { description: 'Session created', content: { 'application/json': { schema: {
-          type: 'object',
-          properties: {
-            session_id: { type: 'string', format: 'uuid' },
-            tool:       { type: 'string', enum: ['agy', 'claude'] },
-            model:      { type: 'string' },
-          },
-        }}}},
-        400: { description: 'Invalid tool value', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        201: { description: 'User created', content: { 'application/json': { schema: { $ref: '#/components/schemas/User' } } } },
+        400: { description: 'name required' },
+        403: { description: 'Admin key required' },
+        409: { description: 'external_id already exists' },
       },
     },
     get: {
-      tags: ['Sessions'],
-      summary: 'List sessions for the authenticated user',
-      description: [
-        'Returns all sessions belonging to the authenticated user, sorted by most recent.',
-        '',
-        '**User isolation:** Each API key only sees its own sessions.',
-        'Legacy sessions created before multi-user support was added are visible to all users.',
-      ].join('\n'),
-      parameters: [
-        { name: 'limit',  in: 'query', schema: { type: 'integer', default: 20, maximum: 200 }, description: 'Number of items per page.' },
-        { name: 'offset', in: 'query', schema: { type: 'integer', default: 0 }, description: 'Skip first N items.' },
-        { name: 'q',      in: 'query', schema: { type: 'string' }, description: 'Filter by title or preview text.' },
-      ],
+      tags: ['1. Users (Admin)'],
+      summary: 'List all users',
+      description: 'Admin only.',
       responses: {
-        200: {
-          description: 'List of sessions',
-          content: { 'application/json': { schema: {
-            type: 'object',
-            properties: {
-              total:  { type: 'integer', example: 42 },
-              offset: { type: 'integer', example: 0 },
-              limit:  { type: 'integer', example: 20 },
-              items:  { type: 'array', items: { $ref: '#/components/schemas/Session' } },
-            },
-          }}},
-        },
-        401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        200: { description: 'Users list', content: { 'application/json': { schema: { type: 'object', properties: { total: { type: 'integer' }, items: { type: 'array', items: { $ref: '#/components/schemas/User' } } } } } } },
+        403: { description: 'Admin key required' },
       },
     },
   },
-  '/sessions/{id}': {
+  '/users/me': {
     get: {
-      tags: ['Sessions'],
-      summary: 'Get session details',
-      parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
-      ],
+      tags: ['1. Users (Admin)'],
+      summary: 'Get current user info',
       responses: {
-        200: { description: 'Session detail', content: { 'application/json': { schema: { $ref: '#/components/schemas/Session' } } } },
-        401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        403: { description: 'Session belongs to another user', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        404: { description: 'Not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        200: { description: 'Current user', content: { 'application/json': { schema: { $ref: '#/components/schemas/User' } } } },
       },
     },
   },
-  '/sessions/{id}/tool': {
-    get: {
-      tags: ['Sessions'],
-      summary: 'Get the tool & model used in this session',
-      parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
-      ],
+  '/users/{user_id}': {
+    delete: {
+      tags: ['1. Users (Admin)'],
+      summary: 'Delete a user and all their apps',
+      parameters: [{ name: 'user_id', in: 'path', required: true, schema: { type: 'string' } }],
       responses: {
-        200: {
-          description: 'Session tool info',
-          content: { 'application/json': { schema: {
-            type: 'object',
-            properties: {
-              tool:   { type: 'string', enum: ['agy', 'claude'] },
-              model:  { type: 'string' },
-            },
-          }}},
-        },
-        401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        403: { description: 'Session belongs to another user', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-      },
-    },
-  },
-  '/sessions/{id}/messages': {
-    get: {
-      tags: ['Sessions'],
-      summary: 'Get conversation transcript',
-      description: 'Returns all messages (user & assistant) for this session. Supports both agy and Claude sessions.',
-      parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
-      ],
-      responses: {
-        200: {
-          description: 'List of messages',
-          content: { 'application/json': { schema: {
-            type: 'object',
-            properties: {
-              messages: { type: 'array', items: { $ref: '#/components/schemas/Message' } },
-            },
-          }}},
-        },
-        400: { description: 'Invalid session ID', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        403: { description: 'Session belongs to another user', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-      },
-    },
-  },
-  '/health': {
-    get: {
-      tags: ['System'],
-      summary: 'Health check',
-      security: [],
-      responses: {
-        200: {
-          description: 'Server is running',
-          content: { 'application/json': { schema: { type: 'object', properties: {
-            status: { type: 'string', example: 'ok' },
-            agy:    { type: 'string', example: '/usr/local/bin/agy' },
-            auth:   { type: 'string', example: 'enabled' },
-          }}}},
-        },
-      },
-    },
-  },
-  '/models': {
-    get: {
-      tags: ['1. Tool & Model'],
-      summary: 'List available models',
-      description: [
-        '**Step 1:** Fetch available models for each tool.',
-        '',
-        '- `GET /models?tool=agy` → Antigravity models (Gemini, Claude via Google, GPT)',
-        '- `GET /models?tool=claude` → Claude Code models (Anthropic Claude)',
-        '- `GET /models` → all tools at once',
-      ].join('\n'),
-      parameters: [
-        { name: 'tool', in: 'query', schema: { type: 'string', enum: ['agy', 'claude'] }, description: '`agy` = Antigravity CLI, `claude` = Claude Code CLI. Omit to return all.' },
-      ],
-      responses: {
-        200: {
-          description: 'List of models',
-          content: { 'application/json': { schema: {
-            oneOf: [
-              {
-                title: 'Response with ?tool=agy or ?tool=claude',
-                type: 'object',
-                properties: {
-                  tool: { type: 'string', example: 'agy' },
-                  models: { type: 'array', items: { $ref: '#/components/schemas/Model' } },
-                },
-              },
-              {
-                title: 'Response without filter (all tools)',
-                type: 'object',
-                properties: {
-                  tools: {
-                    type: 'object',
-                    example: { agy: { name: 'Antigravity CLI', models: [{ id: 'gemini-4-hydrogen-low', name: 'Gemini 4 Hydrogen (Low)' }] }, claude: { name: 'Claude Code CLI', models: [{ id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' }] } },
-                  },
-                },
-              },
-            ],
-          }}},
-        },
-        401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-      },
-    },
-  },
-  '/chat': {
-    post: {
-      tags: ['2. Chat'],
-      summary: 'New session — send a prompt',
-      description: [
-        '**Step 2:** Start a new session with your chosen tool and model.',
-        '',
-        '### Choose a Tool',
-        '| `tool` | LLM | Best for |',
-        '|--------|-----|----------|',
-        '| `agy` _(default)_ | Antigravity CLI | General chat, images, web search, multi-model |',
-        '| `claude` | Claude Code CLI | Coding, debugging, code review, software dev |',
-        '',
-        '### Model',
-        'Use the `id` from `GET /models?tool=<tool>` as the `model` value.',
-        '',
-        '### Response',
-        '- **Non-streaming** (`stream: false`): single JSON response with `session_id` and `tool_used`.',
-        '- **Streaming** (`stream: true`): SSE — events `init`, `step_update` (token stream), `result`, `error`.',
-        '',
-        'Save `session_id` from the response to continue the session at `POST /sessions/{session_id}/chat`.',
-      ].join('\n'),
-      requestBody: {
-        required: true,
-        content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatRequest' },
-          examples: {
-            agy_gemini: {
-              summary: 'Chat with Antigravity (Gemini)',
-              value: { prompt: 'Explain what Docker is.', tool: 'agy', model: 'gemini-4-hydrogen-low', stream: false },
-            },
-            claude_coding: {
-              summary: 'Coding with Claude Code',
-              value: { prompt: 'Write a Python function to merge two sorted arrays.', tool: 'claude', model: 'claude-sonnet-4-6', stream: false },
-            },
-            streaming: {
-              summary: 'Streaming chat (SSE)',
-              value: { prompt: 'Give a brief history of AI.', tool: 'agy', model: 'gemini-3.8-flash-low', stream: true },
-            },
-          },
-        }},
-      },
-      responses: {
-        200: {
-          description: 'Success',
-          content: {
-            'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } },
-            'text/event-stream': { schema: { $ref: '#/components/schemas/SseEvent' } },
-          },
-        },
-        400: { description: 'prompt is required', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        500: { description: 'Tool error', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-      },
-    },
-  },
-  '/chat/upload': {
-    post: {
-      tags: ['2. Chat'],
-      summary: 'New session — send prompt + images (multipart)',
-      description: 'Start a new session with image attachments. Supports `agy` and `claude` (Sonnet/Opus). Up to 10 files (max 20 MB each), automatically deleted after the request.',
-      requestBody: {
-        required: true,
-        content: { 'multipart/form-data': { schema: { $ref: '#/components/schemas/UploadRequest' } } },
-      },
-      responses: {
-        200: { description: 'Success', content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } } } },
-        400: { description: 'prompt required or invalid file format', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        500: { description: 'Tool error', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-      },
-    },
-  },
-  '/sessions/{session_id}/chat': {
-    post: {
-      tags: ['2. Chat'],
-      summary: 'Continue session — send a prompt',
-      description: [
-        '**Step 3:** Continue an existing conversation.',
-        '',
-        'The tool **follows the session automatically** — no need to send `tool` again.',
-        'The `tool` field in the body is ignored for this endpoint.',
-        '',
-        '> Only the session owner (the API key that created it) can continue a session.',
-      ].join('\n'),
-      parameters: [
-        { name: 'session_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, description: '`session_id` from the `POST /chat` or `POST /sessions` response.' },
-      ],
-      requestBody: {
-        required: true,
-        content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatRequest' },
-          examples: {
-            continue: {
-              summary: 'Continue session (tool is automatic)',
-              value: { prompt: 'Can you explain that in more detail?', stream: false },
-            },
-          },
-        }},
-      },
-      responses: {
-        200: {
-          description: 'Success',
-          content: {
-            'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } },
-            'text/event-stream': { schema: { $ref: '#/components/schemas/SseEvent' } },
-          },
-        },
-        400: { description: 'prompt is required', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        403: { description: 'Session belongs to another user', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        500: { description: 'Tool error', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-      },
-    },
-  },
-  '/route': {
-    post: {
-      tags: ['3. Auto-Route'],
-      summary: 'Auto-route — let the LLM classifier pick the tool',
-      description: [
-        'Alternative to `POST /chat`: send a prompt and a small classifier (Gemini Flash) automatically picks the best tool.',
-        '',
-        '**Routing criteria:**',
-        '- `claude` → prompts about coding, debugging, refactoring, code review, programming, software architecture',
-        '- `agy` → everything else (general questions, creative, chat, images, etc.)',
-        '',
-        'SSE streaming: the first event is always `{"event":"route","tool":"agy"|"claude"}` before any other events.',
-      ].join('\n'),
-      requestBody: {
-        required: true,
-        content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatRequest' },
-          examples: {
-            coding: {
-              summary: 'Coding prompt → will be routed to claude',
-              value: { prompt: 'Build a REST API with Express.js and JWT auth.', stream: false },
-            },
-            general: {
-              summary: 'General prompt → will be routed to agy',
-              value: { prompt: 'What is the difference between machine learning and deep learning?', stream: false },
-            },
-          },
-        }},
-      },
-      responses: {
-        200: {
-          description: 'Success — includes `tool_used` to identify the selected tool',
-          content: {
-            'application/json': { schema: { allOf: [{ $ref: '#/components/schemas/ChatResponse' }, { type: 'object', properties: { tool_used: { type: 'string', enum: ['agy', 'claude'], example: 'claude' } } }] } },
-            'text/event-stream': { schema: { $ref: '#/components/schemas/SseEvent' } },
-          },
-        },
-        401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        500: { description: 'Error', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-      },
-    },
-  },
-  '/sessions/{session_id}/route': {
-    post: {
-      tags: ['3. Auto-Route'],
-      summary: 'Continue session with auto-route',
-      description: 'Continue a session started via `POST /route`. The tool follows the tool used in that session.',
-      parameters: [
-        { name: 'session_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
-      ],
-      requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatRequest' } } } },
-      responses: {
-        200: { description: 'Success', content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } } } },
-        401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        403: { description: 'Session belongs to another user', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        500: { description: 'Error', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-      },
-    },
-  },
-  '/sessions/{session_id}/chat/upload': {
-    post: {
-      tags: ['2. Chat'],
-      summary: 'Continue session — send prompt + images (multipart)',
-      description: 'Continue a session with image attachments. Supports `agy` and `claude`. For `claude`, use Sonnet or Opus (Haiku does not support vision).',
-      parameters: [
-        { name: 'session_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, description: 'Session ID from `POST /chat` or `POST /sessions` response.' },
-      ],
-      requestBody: {
-        required: true,
-        content: { 'multipart/form-data': { schema: { $ref: '#/components/schemas/UploadRequest' } } },
-      },
-      responses: {
-        200: { description: 'Success', content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } } } },
-        400: { description: 'prompt required or invalid file format', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        403: { description: 'Session belongs to another user', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        500: { description: 'Tool error', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        200: { description: 'Deleted' },
+        403: { description: 'Admin key required' },
+        404: { description: 'User not found' },
       },
     },
   },
   '/apps': {
     post: {
-      tags: ['4. Apps'],
+      tags: ['2. Apps'],
       summary: 'Create a new app',
-      description: 'Requires `ADMIN_KEY`. Response includes the `api_key` the app uses for requests.',
+      description: 'Creates an app owned by the authenticated user. Each app has one persistent CLI session.',
       requestBody: { required: true, content: { 'application/json': { schema: {
         type: 'object', required: ['name'],
-        properties: { name: { type: 'string', example: 'Mobile App v1' } },
+        properties: {
+          name:  { type: 'string', example: 'My Assistant' },
+          tool:  { type: 'string', enum: ['agy', 'claude'], default: 'agy' },
+          model: { type: 'string', example: 'gemini-2.5-pro' },
+        },
       }}}},
       responses: {
         201: { description: 'App created', content: { 'application/json': { schema: { $ref: '#/components/schemas/App' } } } },
-        400: { description: 'name is required', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        403: { description: 'Admin key required', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        400: { description: 'name required or invalid tool' },
       },
     },
     get: {
-      tags: ['4. Apps'],
-      summary: 'List all apps',
-      description: 'Requires `ADMIN_KEY`.',
+      tags: ['2. Apps'],
+      summary: 'List apps',
+      description: 'Returns apps owned by the authenticated user. Admin sees all apps.',
       responses: {
-        200: { description: 'List of apps', content: { 'application/json': { schema: {
-          type: 'object',
-          properties: {
-            total: { type: 'integer' },
-            items: { type: 'array', items: { $ref: '#/components/schemas/App' } },
-          },
-        }}}},
-        403: { description: 'Admin key required', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        200: { description: 'Apps list', content: { 'application/json': { schema: { type: 'object', properties: { total: { type: 'integer' }, items: { type: 'array', items: { $ref: '#/components/schemas/App' } } } } } } },
       },
     },
   },
   '/apps/{app_id}': {
     get: {
-      tags: ['4. Apps'],
+      tags: ['2. Apps'],
       summary: 'Get app details',
-      description: 'Accessible by admin or the app itself.',
-      parameters: [{ name: 'app_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      parameters: [{ name: 'app_id', in: 'path', required: true, schema: { type: 'string' } }],
       responses: {
         200: { description: 'App detail', content: { 'application/json': { schema: { $ref: '#/components/schemas/App' } } } },
-        403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        404: { description: 'App not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        403: { description: 'Forbidden' },
+        404: { description: 'Not found' },
       },
     },
     delete: {
-      tags: ['4. Apps'],
-      summary: 'Delete app and all its users',
-      description: 'Admin only. All users belonging to this app are also deleted.',
-      parameters: [{ name: 'app_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      tags: ['2. Apps'],
+      summary: 'Delete an app',
+      parameters: [{ name: 'app_id', in: 'path', required: true, schema: { type: 'string' } }],
       responses: {
-        200: { description: 'Deleted successfully', content: { 'application/json': { schema: { type: 'object', properties: { deleted: { type: 'boolean' } } } } } },
-        403: { description: 'Admin key required', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        404: { description: 'App not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        200: { description: 'Deleted' },
+        403: { description: 'Forbidden' },
+        404: { description: 'Not found' },
       },
     },
   },
-  '/apps/{app_id}/users': {
+  '/apps/{app_id}/messages': {
+    get: {
+      tags: ['2. Apps'],
+      summary: 'Get app conversation history',
+      description: 'Returns all messages from the app\'s CLI session.',
+      parameters: [{ name: 'app_id', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        200: { description: 'Messages', content: { 'application/json': { schema: { type: 'object', properties: { messages: { type: 'array', items: { $ref: '#/components/schemas/Message' } } } } } } },
+        403: { description: 'Forbidden' },
+        404: { description: 'Not found' },
+      },
+    },
+  },
+  '/chat': {
     post: {
-      tags: ['5. Users'],
-      summary: 'Create a new user in an app',
-      description: 'Accessible by admin or the app itself. The returned `user_id` is used in the `X-User-Id` header on chat requests.',
-      parameters: [{ name: 'app_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
-      requestBody: { required: true, content: { 'application/json': { schema: {
-        type: 'object', required: ['name'],
-        properties: {
-          name:        { type: 'string', example: 'John Doe' },
-          external_id: { type: 'string', nullable: true, description: 'ID from your external system. Optional, must be unique per app.', example: 'user-123' },
-        },
-      }, examples: {
-        minimal:  { summary: 'Name only', value: { name: 'Alice' } },
-        with_ext: { summary: 'With external_id', value: { name: 'Bob', external_id: 'uid-456' } },
-      }}}},
+      tags: ['3. Chat'],
+      summary: 'Send a message to an app',
+      description: [
+        'Send `X-App-Id` header to chat within an app\'s persistent session.',
+        '',
+        'On the first message, the CLI session is created and saved to the app.',
+        'Subsequent messages automatically continue the same session.',
+        '',
+        '**Streaming** (`stream: true`): SSE events — `init`, `step_update`, `result`, `error`.',
+      ].join('\n'),
+      security: [{ ApiKeyHeader: [], AppIdHeader: [] }],
+      requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatRequest' } } } },
       responses: {
-        201: { description: 'User created', content: { 'application/json': { schema: { $ref: '#/components/schemas/User' } } } },
-        400: { description: 'name is required', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        409: { description: 'external_id already exists in this app', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-      },
-    },
-    get: {
-      tags: ['5. Users'],
-      summary: 'List users in an app',
-      parameters: [{ name: 'app_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
-      responses: {
-        200: { description: 'List of users', content: { 'application/json': { schema: {
-          type: 'object',
-          properties: {
-            total: { type: 'integer' },
-            items: { type: 'array', items: { $ref: '#/components/schemas/User' } },
-          },
-        }}}},
-        403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        404: { description: 'App not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        200: { description: 'Success', content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } }, 'text/event-stream': {} } },
+        400: { description: 'prompt required' },
+        403: { description: 'App not owned by user' },
       },
     },
   },
-  '/apps/{app_id}/users/{user_id}': {
-    get: {
-      tags: ['5. Users'],
-      summary: 'Get user details',
-      parameters: [
-        { name: 'app_id',  in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
-        { name: 'user_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
-      ],
+  '/chat/upload': {
+    post: {
+      tags: ['3. Chat'],
+      summary: 'Send a message with images (multipart)',
+      security: [{ ApiKeyHeader: [], AppIdHeader: [] }],
+      requestBody: { required: true, content: { 'multipart/form-data': { schema: { type: 'object', required: ['prompt'], properties: { prompt: { type: 'string' }, stream: { type: 'string' }, images: { type: 'array', items: { type: 'string', format: 'binary' } } } } } } },
       responses: {
-        200: { description: 'User detail', content: { 'application/json': { schema: { $ref: '#/components/schemas/User' } } } },
-        403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        404: { description: 'User not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        200: { description: 'Success', content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } } } },
       },
     },
-    delete: {
-      tags: ['5. Users'],
-      summary: 'Delete a user',
-      parameters: [
-        { name: 'app_id',  in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
-        { name: 'user_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
-      ],
+  },
+  '/route': {
+    post: {
+      tags: ['3. Chat'],
+      summary: 'Auto-route — classifier picks agy or claude',
+      description: 'Only for new apps without a session. Gemini Flash classifies the prompt and picks the best tool.',
+      security: [{ ApiKeyHeader: [], AppIdHeader: [] }],
+      requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatRequest' } } } },
       responses: {
-        200: { description: 'Deleted successfully', content: { 'application/json': { schema: { type: 'object', properties: { deleted: { type: 'boolean' } } } } } },
-        403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-        404: { description: 'User not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        200: { description: 'Success', content: { 'application/json': { schema: { $ref: '#/components/schemas/ChatResponse' } } } },
       },
+    },
+  },
+  '/models': {
+    get: {
+      tags: ['4. System'],
+      summary: 'List available models',
+      parameters: [{ name: 'tool', in: 'query', schema: { type: 'string', enum: ['agy', 'claude'] } }],
+      responses: { 200: { description: 'Models list' } },
+    },
+  },
+  '/health': {
+    get: {
+      tags: ['4. System'],
+      summary: 'Health check',
+      security: [],
+      responses: { 200: { description: 'OK' } },
+    },
+  },
+  '/usage': {
+    get: {
+      tags: ['4. System'],
+      summary: 'Quota usage for Claude and AGY',
+      responses: { 200: { description: 'Usage data' } },
     },
   },
 };
@@ -936,30 +540,22 @@ swaggerSpec.paths = {
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
   customSiteTitle: 'AGY API Docs',
   swaggerOptions: { persistAuthorization: true },
-  customCss: `
-    .swagger-ui .topbar { display: none }
-    #dashboard-btn {
-      position: fixed; top: 12px; right: 16px; z-index: 9999;
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 500;
-      background: #1e293b; color: #94a3b8; border: 1px solid #334155;
-      text-decoration: none; cursor: pointer; transition: all .15s;
-    }
-    #dashboard-btn:hover { background: #334155; color: #fff; border-color: #4ade80; }
-  `,
+  customCss: `.swagger-ui .topbar { display: none }`,
   customJsStr: `
     window.addEventListener('load', function() {
       var btn = document.createElement('a');
-      btn.id = 'dashboard-btn';
+      btn.style = 'position:fixed;top:12px;right:16px;z-index:9999;padding:7px 14px;border-radius:8px;font-size:13px;background:#1e293b;color:#94a3b8;border:1px solid #334155;text-decoration:none';
       btn.href = window.location.origin + '/dashboard';
       btn.target = '_blank';
-      btn.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" stroke-linecap="round" stroke-linejoin="round"/></svg> Dashboard';
+      btn.textContent = 'Dashboard';
       document.body.appendChild(btn);
     });
   `,
 }));
 app.get('/docs.json', (req, res) => res.json(swaggerSpec));
 
+// ---------------------------------------------------------------------------
+// CLI runners
 // ---------------------------------------------------------------------------
 
 function runAgy({ prompt, conversationId, model, effort, cwd, images = [], onChunk } = {}) {
@@ -969,15 +565,13 @@ function runAgy({ prompt, conversationId, model, effort, cwd, images = [], onChu
       '--print', buildPrompt(prompt, images),
       '--output-format', streaming ? 'stream-json' : 'json',
     ];
-
     if (process.env.AGY_SKIP_PERMISSIONS === '1') args.push('--dangerously-skip-permissions');
     if (conversationId) args.push('--conversation', conversationId);
     if (model) args.push('--model', model);
     if (effort) args.push('--effort', effort);
 
     const proc = spawn(AGY_BIN, args, { cwd: cwd || DEFAULT_CWD, env: process.env });
-    let stdout = '';
-    let stderr = '';
+    let stdout = '', stderr = '';
 
     proc.stdout.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -990,9 +584,7 @@ function runAgy({ prompt, conversationId, model, effort, cwd, images = [], onChu
         }
       }
     });
-
     proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
-
     proc.on('close', (code) => {
       if (!streaming) {
         try { resolve(JSON.parse(stdout.trim())); }
@@ -1003,7 +595,6 @@ function runAgy({ prompt, conversationId, model, effort, cwd, images = [], onChu
       if (code !== 0 && stderr) reject(new Error(`agy exited ${code}: ${stderr}`));
       else resolve();
     });
-
     proc.on('error', reject);
   });
 }
@@ -1015,13 +606,9 @@ function buildPrompt(prompt, images) {
 
 function saveBase64Images(b64list) {
   return b64list.map((entry) => {
-    let data = entry;
-    let ext = '.jpg';
+    let data = entry, ext = '.jpg';
     const match = entry.match(/^data:(image\/(\w+));base64,(.+)$/);
-    if (match) {
-      ext = `.${match[2]}`;
-      data = match[3];
-    }
+    if (match) { ext = `.${match[2]}`; data = match[3]; }
     const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
     const filepath = path.join(UPLOAD_DIR, filename);
     fs.writeFileSync(filepath, Buffer.from(data, 'base64'));
@@ -1033,68 +620,6 @@ function cleanupFiles(files) {
   for (const f of files) try { fs.unlinkSync(f); } catch {}
 }
 
-// ---------------------------------------------------------------------------
-// POST /chat                        — sesi baru (JSON / base64)
-// POST /sessions/:session_id/chat   — lanjut sesi (JSON / base64)
-// ---------------------------------------------------------------------------
-async function chatHandler(req, res) {
-  const sessionId = req.params.session_id || null;
-  const { prompt, model, effort, stream, images_base64, tool } = req.body;
-  if (!prompt) return res.status(400).json({ error: 'prompt is required' });
-
-  if (sessionId && !checkSessionOwner(req, res, sessionId)) return;
-
-  // tool: "agy" | "claude" — kalau ada session, pakai tool yang tersimpan
-  const resolvedTool = sessionId ? getSessionTool(sessionId) : (tool || 'agy');
-
-  const tempFiles = [];
-  try {
-    if (Array.isArray(images_base64) && images_base64.length) {
-      tempFiles.push(...saveBase64Images(images_base64));
-    }
-    await handleChat({ res, prompt, conversation_id: sessionId, model, effort, stream, images: tempFiles, tool: resolvedTool, userId: req.userId, appId: req.appId });
-  } catch (err) {
-    if (!res.headersSent) res.status(500).json({ error: err.message });
-  } finally {
-    cleanupFiles(tempFiles);
-  }
-}
-
-app.post('/chat', chatHandler);
-app.post('/sessions/:session_id/chat', chatHandler);
-
-// ---------------------------------------------------------------------------
-// POST /chat/upload                        — sesi baru (multipart)
-// POST /sessions/:session_id/chat/upload   — lanjut sesi (multipart)
-// ---------------------------------------------------------------------------
-async function uploadHandler(req, res) {
-  const sessionId = req.params.session_id || null;
-  const { prompt, model, effort, stream, tool } = req.body;
-  if (!prompt) return res.status(400).json({ error: 'prompt is required' });
-
-  if (sessionId && !checkSessionOwner(req, res, sessionId)) return;
-
-  const resolvedTool = sessionId ? getSessionTool(sessionId) : (tool || 'agy');
-  const uploadedPaths = (req.files || []).map(f => f.path);
-  try {
-    await handleChat({ res, prompt, conversation_id: sessionId, model, effort, stream, images: uploadedPaths, tool: resolvedTool, userId: req.userId, appId: req.appId });
-  } catch (err) {
-    if (!res.headersSent) res.status(500).json({ error: err.message });
-  } finally {
-    cleanupFiles(uploadedPaths);
-  }
-}
-
-app.post('/chat/upload', upload.array('images', 10), uploadHandler);
-app.post('/sessions/:session_id/chat/upload', upload.array('images', 10), uploadHandler);
-
-app.use((err, req, res, next) => {
-  if (err instanceof multer.MulterError || err.message?.includes('image')) {
-    return res.status(400).json({ error: err.message });
-  }
-  next(err);
-});
-
 const IMAGE_MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };
 
 function imagesToBase64(paths) {
@@ -1104,298 +629,16 @@ function imagesToBase64(paths) {
   });
 }
 
-async function handleChat({ res, prompt, conversation_id, model, effort, stream, images = [], tool = 'agy', userId = '', appId = '' }) {
-  const wantStream = stream === true || stream === 'true' || stream === '1';
-  const useClaude = tool === 'claude';
-  const claudeImages = useClaude && images.length ? imagesToBase64(images) : [];
-
-  if (wantStream) {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
-    const sendSSE = (data) => {
-      if (data.event === 'result' && (data.result?.conversation_id || data.result?.session_id)) {
-        const sid = data.result.session_id || data.result.conversation_id;
-        data.result.session_id = sid;
-        data.result.tool_used = tool;
-        saveSessionTool(sid, tool, model, userId, appId);
-      }
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
-    };
-    try {
-      if (useClaude) {
-        await runClaude({ prompt, sessionId: conversation_id, model, effort, images: claudeImages, onChunk: sendSSE });
-      } else {
-        await runAgy({ prompt, conversationId: conversation_id, model, effort, images, onChunk: sendSSE });
-      }
-    } catch (err) {
-      sendSSE({ event: 'error', error: err.message });
-    }
-    res.end();
-  } else {
-    let result;
-    if (useClaude) {
-      result = await runClaude({ prompt, sessionId: conversation_id, model, effort, images: claudeImages });
-    } else {
-      const r = await runAgy({ prompt, conversationId: conversation_id, model, effort, images });
-      result = { session_id: r.conversation_id, ...r };
-    }
-    result.tool_used = tool;
-    saveSessionTool(result.session_id, tool, model, userId, appId);
-    res.json(result);
-  }
-}
-
-// GET /sessions?limit=20&offset=0&q=keyword
-app.get('/sessions', (req, res) => {
-  const limit  = Math.min(parseInt(req.query.limit  || '20', 10), 200);
-  const offset = parseInt(req.query.offset || '0', 10);
-  const q      = (req.query.q || '').toLowerCase();
-  const userId = req.userId;
-
-  const agyList = loadSessions();
-  const claudeList = loadClaudeSessions();
-  const agyIds = new Set(agyList.map(s => s.session_id));
-
-  let list = [...agyList, ...claudeList.filter(s => !agyIds.has(s.session_id))]
-    .sort((a, b) => new Date(b.last_modified) - new Date(a.last_modified));
-
-  if (q) {
-    list = list.filter(c =>
-      c.title.toLowerCase().includes(q) || c.preview.toLowerCase().includes(q)
-    );
-  }
-
-  // Only show sessions owned by this user/app (untagged legacy sessions visible to all)
-  list = list.filter(s => {
-    const sd = getSessionData(s.session_id);
-    if (req.isAdmin) return true;
-    const userMatch = !sd.userId || sd.userId === userId;
-    const appMatch  = !sd.appId  || sd.appId === 'legacy' || sd.appId === req.appId;
-    return userMatch && appMatch;
-  });
-
-  const items = list.slice(offset, offset + limit).map(s => {
-    const sd = getSessionData(s.session_id);
-    // For Claude-dir sessions not yet in session_tools.json, default tool to 'claude'
-    const toolUsed = (sd.tool === 'agy' && s._isClaude) ? 'claude' : sd.tool;
-    const { _isClaude, ...rest } = s;
-    return { ...rest, tool_used: toolUsed, model_used: sd.model };
-  });
-
-  res.json({ total: list.length, offset, limit, items });
-});
-
-// POST /sessions — buat session baru (init ping ke tool untuk dapat session_id nyata)
-app.post('/sessions', async (req, res) => {
-  const { tool = 'agy', model = '' } = req.body;
-  if (!['agy', 'claude'].includes(tool)) return res.status(400).json({ error: 'tool must be "agy" or "claude"' });
-  try {
-    let sessionId;
-    if (tool === 'claude') {
-      const r = await runClaude({ prompt: '.', model });
-      sessionId = r.session_id;
-    } else {
-      const r = await runAgy({ prompt: '.', model });
-      sessionId = r.conversation_id;
-    }
-    if (!sessionId) throw new Error('Tool did not return a session_id');
-    saveSessionTool(sessionId, tool, model, req.userId, req.appId);
-    res.status(201).json({ session_id: sessionId, tool, model });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// App & User management
-// ---------------------------------------------------------------------------
-
-// POST /apps — buat app baru (admin only)
-app.post('/apps', adminOnly, (req, res) => {
-  const { name } = req.body;
-  if (!name) return res.status(400).json({ error: 'name is required' });
-  const apps = loadApps();
-  const app_id  = randomUUID();
-  const api_key = require('crypto').randomBytes(24).toString('hex');
-  apps[app_id] = { app_id, name, api_key, created_at: new Date().toISOString() };
-  saveApps(apps);
-  res.status(201).json(apps[app_id]);
-});
-
-// GET /apps — list semua app (admin only)
-app.get('/apps', adminOnly, (req, res) => {
-  const apps = loadApps();
-  res.json({ total: Object.keys(apps).length, items: Object.values(apps) });
-});
-
-// GET /apps/:app_id — detail app
-app.get('/apps/:app_id', appGuard, (req, res) => {
-  const apps = loadApps();
-  const a = apps[req.params.app_id];
-  if (!a) return res.status(404).json({ error: 'App not found' });
-  res.json(a);
-});
-
-// DELETE /apps/:app_id — hapus app (admin only)
-app.delete('/apps/:app_id', adminOnly, (req, res) => {
-  const apps = loadApps();
-  if (!apps[req.params.app_id]) return res.status(404).json({ error: 'App not found' });
-  delete apps[req.params.app_id];
-  saveApps(apps);
-  // Hapus semua user milik app ini
-  const users = loadUsers();
-  for (const uid of Object.keys(users)) {
-    if (users[uid].app_id === req.params.app_id) delete users[uid];
-  }
-  saveUsers(users);
-  res.json({ deleted: true });
-});
-
-// POST /apps/:app_id/users — buat user baru
-app.post('/apps/:app_id/users', appGuard, (req, res) => {
-  const apps = loadApps();
-  if (!apps[req.params.app_id]) return res.status(404).json({ error: 'App not found' });
-  const { name, external_id } = req.body;
-  if (!name) return res.status(400).json({ error: 'name is required' });
-  const users = loadUsers();
-  // Cek duplikat external_id dalam app yang sama
-  if (external_id) {
-    const dup = Object.values(users).find(u => u.app_id === req.params.app_id && u.external_id === external_id);
-    if (dup) return res.status(409).json({ error: 'external_id already exists in this app', user_id: dup.user_id });
-  }
-  const user_id = randomUUID();
-  users[user_id] = { user_id, app_id: req.params.app_id, name, external_id: external_id || null, created_at: new Date().toISOString() };
-  saveUsers(users);
-  res.status(201).json(users[user_id]);
-});
-
-// GET /apps/:app_id/users — list users dalam app
-app.get('/apps/:app_id/users', appGuard, (req, res) => {
-  const apps = loadApps();
-  if (!apps[req.params.app_id]) return res.status(404).json({ error: 'App not found' });
-  const users = loadUsers();
-  const items = Object.values(users).filter(u => u.app_id === req.params.app_id);
-  res.json({ total: items.length, items });
-});
-
-// GET /apps/:app_id/users/:user_id — detail user
-app.get('/apps/:app_id/users/:user_id', appGuard, (req, res) => {
-  const users = loadUsers();
-  const u = users[req.params.user_id];
-  if (!u || u.app_id !== req.params.app_id) return res.status(404).json({ error: 'User not found' });
-  res.json(u);
-});
-
-// DELETE /apps/:app_id/users/:user_id — hapus user
-app.delete('/apps/:app_id/users/:user_id', appGuard, (req, res) => {
-  const users = loadUsers();
-  const u = users[req.params.user_id];
-  if (!u || u.app_id !== req.params.app_id) return res.status(404).json({ error: 'User not found' });
-  delete users[req.params.user_id];
-  saveUsers(users);
-  res.json({ deleted: true });
-});
-
-// ---------------------------------------------------------------------------
-
-// GET /sessions/:id
-app.get('/sessions/:id', (req, res) => {
-  const id = req.params.id;
-  if (!checkSessionOwner(req, res, id)) return;
-  const conv = loadSessions().find(c => c.session_id === id);
-  if (!conv) return res.status(404).json({ error: 'Session not found' });
-  const sd = getSessionData(id);
-  res.json({ ...conv, tool_used: sd.tool, model_used: sd.model });
-});
-
-// ---------------------------------------------------------------------------
-// Router: LLM classifier + runClaude
-// ---------------------------------------------------------------------------
-const SESSION_TOOLS_FILE = path.join(process.env.HOME, '.gemini', 'antigravity-cli', 'cache', 'session_tools.json');
-
-function getSessionTool(id) {
-  try {
-    const entry = JSON.parse(fs.readFileSync(SESSION_TOOLS_FILE, 'utf8'))[id];
-    if (!entry) return 'agy';
-    return typeof entry === 'string' ? entry : (entry.tool || 'agy');
-  } catch { return 'agy'; }
-}
-
-function getSessionData(id) {
-  try {
-    const entry = JSON.parse(fs.readFileSync(SESSION_TOOLS_FILE, 'utf8'))[id];
-    if (!entry) return { tool: 'agy', model: '', userId: '', appId: '' };
-    if (typeof entry === 'string') return { tool: entry, model: '', userId: '', appId: '' };
-    return { tool: entry.tool || 'agy', model: entry.model || '', userId: entry.userId || '', appId: entry.appId || '' };
-  } catch { return { tool: 'agy', model: '', userId: '', appId: '' }; }
-}
-
-function saveSessionTool(id, tool, model, userId, appId) {
-  try {
-    let data = {};
-    try { data = JSON.parse(fs.readFileSync(SESSION_TOOLS_FILE, 'utf8')); } catch {}
-    const prev = data[id];
-    data[id] = {
-      tool,
-      model:  model  || (prev && typeof prev === 'object' ? prev.model  : '') || '',
-      userId: userId || (prev && typeof prev === 'object' ? prev.userId : '') || '',
-      appId:  appId  || (prev && typeof prev === 'object' ? prev.appId  : '') || '',
-    };
-    fs.writeFileSync(SESSION_TOOLS_FILE, JSON.stringify(data));
-  } catch {}
-}
-
-// Returns false and sends 403 if session is owned by a different user/app.
-function checkSessionOwner(req, res, sessionId) {
-  if (req.isAdmin) return true;
-  const sd = getSessionData(sessionId);
-  if (sd.userId && req.userId && sd.userId !== req.userId) {
-    res.status(403).json({ error: 'Forbidden: session belongs to another user' });
-    return false;
-  }
-  if (sd.appId && req.appId && sd.appId !== 'legacy' && sd.appId !== req.appId) {
-    res.status(403).json({ error: 'Forbidden: session belongs to another app' });
-    return false;
-  }
-  return true;
-}
-
-async function runRouter(prompt) {
-  const routerPrompt = `You are a request router. Reply with ONLY a JSON object, no markdown, no explanation.
-
-Route to "claude" for: writing/debugging/reviewing code, programming, software architecture, APIs, databases, DevOps, file operations.
-Route to "agy" for: general questions, creative writing, translation, math, chat, images, general knowledge.
-
-Respond ONLY with: {"tool":"claude"} or {"tool":"agy"}
-
-Request: ${JSON.stringify(prompt.slice(0, 400))}`;
-
-  try {
-    const result = await runAgy({ prompt: routerPrompt, model: 'gemini-3.8-flash-low' });
-    const text = result.response.trim().replace(/```json\n?/g, '').replace(/```/g, '').trim();
-    const json = JSON.parse(text);
-    return json.tool === 'claude' ? 'claude' : 'agy';
-  } catch {
-    return 'agy';
-  }
-}
-
-const CLAUDE_BIN = '/usr/bin/claude';
-
 function runClaude({ prompt, sessionId, model, effort, images = [], onChunk } = {}) {
   return new Promise((resolve, reject) => {
     const streaming = typeof onChunk === 'function';
     const hasImages = images.length > 0;
-    // --input-format stream-json requires --output-format stream-json
     const useStreamJson = streaming || hasImages;
 
     const args = ['-p', '--dangerously-skip-permissions'];
     if (useStreamJson) args.push('--output-format', 'stream-json', '--verbose');
     else args.push('--output-format', 'json');
     if (hasImages) args.push('--input-format', 'stream-json');
-    // Only resume if Claude session file exists (pre-allocated sessions don't have a file yet)
     if (sessionId && fs.existsSync(path.join(CLAUDE_PROJECTS_DIR, `${sessionId}.jsonl`))) {
       args.push('-r', sessionId);
     }
@@ -1415,9 +658,7 @@ function runClaude({ prompt, sessionId, model, effort, images = [], onChunk } = 
     }
     proc.stdin.end();
 
-    let stdout = '';
-    let claudeSessionId = null;
-    let collectedResult = null;
+    let stdout = '', claudeSessionId = null, collectedResult = null;
 
     proc.stdout.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -1470,23 +711,167 @@ function runClaude({ prompt, sessionId, model, effort, images = [], onChunk } = 
   });
 }
 
-// POST /route  &  POST /sessions/:session_id/route
-async function routeHandler(req, res) {
-  const sessionId = req.params.session_id || null;
+// ---------------------------------------------------------------------------
+// handleChat — core chat logic
+// ---------------------------------------------------------------------------
+
+async function handleChat({ res, prompt, conversation_id, model, effort, stream, images = [], tool = 'agy', appId = '' }) {
+  const wantStream = stream === true || stream === 'true' || stream === '1';
+  const useClaude = tool === 'claude';
+  const claudeImages = useClaude && images.length ? imagesToBase64(images) : [];
+
+  if (wantStream) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const sendSSE = (data) => {
+      if (data.event === 'result') {
+        const sid = data.result?.session_id || data.result?.conversation_id;
+        if (sid) {
+          data.result.session_id = sid;
+          data.result.tool_used = tool;
+          saveAppSession(appId, sid);
+        }
+      }
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    try {
+      if (useClaude) {
+        await runClaude({ prompt, sessionId: conversation_id, model, effort, images: claudeImages, onChunk: sendSSE });
+      } else {
+        await runAgy({ prompt, conversationId: conversation_id, model, effort, images, onChunk: sendSSE });
+      }
+    } catch (err) {
+      sendSSE({ event: 'error', error: err.message });
+    }
+    res.end();
+  } else {
+    let result;
+    if (useClaude) {
+      result = await runClaude({ prompt, sessionId: conversation_id, model, effort, images: claudeImages });
+    } else {
+      const r = await runAgy({ prompt, conversationId: conversation_id, model, effort, images });
+      result = { session_id: r.conversation_id, ...r };
+    }
+    result.tool_used = tool;
+    saveAppSession(appId, result.session_id);
+    res.json(result);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POST /chat  &  POST /chat/upload
+// ---------------------------------------------------------------------------
+
+async function chatHandler(req, res) {
+  const { prompt, model, effort, stream, images_base64, tool } = req.body;
+  if (!prompt) return res.status(400).json({ error: 'prompt is required' });
+
+  let sessionId = null, resolvedTool = tool || 'agy', resolvedModel = model || '';
+
+  if (req.appId) {
+    const apps = loadApps();
+    const appObj = apps[req.appId];
+    sessionId     = appObj.session_id || null;
+    resolvedTool  = appObj.tool  || tool  || 'agy';
+    resolvedModel = model || appObj.model || '';
+  }
+
+  const tempFiles = [];
+  try {
+    if (Array.isArray(images_base64) && images_base64.length) {
+      tempFiles.push(...saveBase64Images(images_base64));
+    }
+    await handleChat({ res, prompt, conversation_id: sessionId, model: resolvedModel, effort, stream, images: tempFiles, tool: resolvedTool, appId: req.appId });
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  } finally {
+    cleanupFiles(tempFiles);
+  }
+}
+
+async function uploadHandler(req, res) {
+  const { prompt, model, effort, stream, tool } = req.body;
+  if (!prompt) return res.status(400).json({ error: 'prompt is required' });
+
+  let sessionId = null, resolvedTool = tool || 'agy', resolvedModel = model || '';
+
+  if (req.appId) {
+    const apps = loadApps();
+    const appObj = apps[req.appId];
+    sessionId     = appObj.session_id || null;
+    resolvedTool  = appObj.tool  || tool  || 'agy';
+    resolvedModel = model || appObj.model || '';
+  }
+
+  const uploadedPaths = (req.files || []).map(f => f.path);
+  try {
+    await handleChat({ res, prompt, conversation_id: sessionId, model: resolvedModel, effort, stream, images: uploadedPaths, tool: resolvedTool, appId: req.appId });
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  } finally {
+    cleanupFiles(uploadedPaths);
+  }
+}
+
+app.post('/chat', chatHandler);
+app.post('/chat/upload', upload.array('images', 10), uploadHandler);
+
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError || err.message?.includes('image')) {
+    return res.status(400).json({ error: err.message });
+  }
+  next(err);
+});
+
+// ---------------------------------------------------------------------------
+// POST /route
+// ---------------------------------------------------------------------------
+
+async function runRouter(prompt) {
+  const routerPrompt = `You are a request router. Reply with ONLY a JSON object, no markdown, no explanation.
+
+Route to "claude" for: writing/debugging/reviewing code, programming, software architecture, APIs, databases, DevOps, file operations.
+Route to "agy" for: general questions, creative writing, translation, math, chat, images, general knowledge.
+
+Respond ONLY with: {"tool":"claude"} or {"tool":"agy"}
+
+Request: ${JSON.stringify(prompt.slice(0, 400))}`;
+
+  try {
+    const result = await runAgy({ prompt: routerPrompt, model: 'gemini-3.8-flash-low' });
+    const text = result.response.trim().replace(/```json\n?/g, '').replace(/```/g, '').trim();
+    return JSON.parse(text).tool === 'claude' ? 'claude' : 'agy';
+  } catch {
+    return 'agy';
+  }
+}
+
+app.post('/route', async (req, res) => {
   const { prompt, model, effort, stream } = req.body;
   if (!prompt) return res.status(400).json({ error: 'prompt is required' });
 
-  if (sessionId && !checkSessionOwner(req, res, sessionId)) return;
+  let sessionId = null, resolvedTool = null, resolvedModel = model || '';
 
-  let tool;
-  if (sessionId) {
-    tool = getSessionTool(sessionId);
+  if (req.appId) {
+    const apps = loadApps();
+    const appObj = apps[req.appId];
+    sessionId = appObj.session_id || null;
+    // If app already has a session, use its tool. Otherwise auto-route.
+    resolvedTool  = sessionId ? (appObj.tool || 'agy') : await runRouter(prompt);
+    resolvedModel = model || appObj.model || '';
+    // Save chosen tool to app
+    if (!appObj.tool) {
+      apps[req.appId].tool = resolvedTool;
+      saveApps(apps);
+    }
   } else {
-    tool = await runRouter(prompt);
+    resolvedTool = await runRouter(prompt);
   }
 
-  const userId = req.userId;
-  const appId  = req.appId;
   const wantStream = stream === true || stream === 'true' || stream === '1';
 
   if (wantStream) {
@@ -1495,67 +880,91 @@ async function routeHandler(req, res) {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
     const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
-    send({ event: 'route', tool });
-
+    send({ event: 'route', tool: resolvedTool });
     try {
-      if (tool === 'claude') {
-        await runClaude({ prompt, sessionId, model, effort, onChunk: (ev) => {
-          if (ev.event === 'result' && ev.result?.session_id) saveSessionTool(ev.result.session_id, 'claude', model, userId, appId);
-          send(ev);
-        }});
+      const onChunk = (ev) => {
+        if (ev.event === 'result') {
+          const sid = ev.result?.session_id || ev.result?.conversation_id;
+          if (sid) saveAppSession(req.appId, sid);
+        }
+        send(ev);
+      };
+      if (resolvedTool === 'claude') {
+        await runClaude({ prompt, sessionId, model: resolvedModel, effort, onChunk });
       } else {
-        await runAgy({ prompt, conversationId: sessionId, model, effort, images: [], onChunk: (ev) => {
-          if (ev.event === 'result' && ev.result) { ev.result.session_id = ev.result.session_id || ev.result.conversation_id; ev.result.tool_used = 'agy'; if (ev.result.session_id) saveSessionTool(ev.result.session_id, 'agy', model, userId, appId); }
-          send(ev);
-        }});
+        await runAgy({ prompt, conversationId: sessionId, model: resolvedModel, effort, images: [], onChunk });
       }
     } catch (err) { send({ event: 'error', error: err.message }); }
     res.end();
   } else {
     try {
       let result;
-      if (tool === 'claude') {
-        result = await runClaude({ prompt, sessionId, model, effort });
-        saveSessionTool(result.session_id, 'claude', model, userId, appId);
+      if (resolvedTool === 'claude') {
+        result = await runClaude({ prompt, sessionId, model: resolvedModel, effort });
       } else {
-        const r = await runAgy({ prompt, conversationId: sessionId, model, effort, images: [] });
-        result = { session_id: r.conversation_id, ...r, tool_used: 'agy' };
-        saveSessionTool(result.session_id, 'agy', model, userId, appId);
+        const r = await runAgy({ prompt, conversationId: sessionId, model: resolvedModel, effort, images: [] });
+        result = { session_id: r.conversation_id, ...r };
       }
-      res.json({ ...result, tool_used: tool });
+      result.tool_used = resolvedTool;
+      saveAppSession(req.appId, result.session_id);
+      res.json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   }
-}
-
-app.post('/route', routeHandler);
-app.post('/sessions/:session_id/route', routeHandler);
-
-// GET /sessions/:id/tool — tool & model yang dipakai di session ini
-app.get('/sessions/:id/tool', (req, res) => {
-  if (!checkSessionOwner(req, res, req.params.id)) return;
-  res.json(getSessionData(req.params.id));
 });
 
-// GET /sessions/:id/messages — baca transcript agy atau Claude
-app.get('/sessions/:id/messages', (req, res) => {
-  const id = req.params.id;
-  if (!/^[0-9a-f-]{36}$/.test(id)) return res.status(400).json({ error: 'Invalid session ID' });
-  if (!checkSessionOwner(req, res, id)) return;
+// ---------------------------------------------------------------------------
+// Apps
+// ---------------------------------------------------------------------------
 
-  const tool = getSessionTool(id);
+app.get('/apps', (req, res) => {
+  const apps = loadApps();
+  const items = req.isAdmin
+    ? Object.values(apps)
+    : Object.values(apps).filter(a => a.owner_user_id === req.userId);
+  res.json({ total: items.length, items });
+});
 
-  // --- Claude session ---
+app.post('/apps', (req, res) => {
+  const { name, tool = 'agy', model = '' } = req.body;
+  if (!name) return res.status(400).json({ error: 'name is required' });
+  if (!['agy', 'claude'].includes(tool)) return res.status(400).json({ error: 'tool must be "agy" or "claude"' });
+  const apps = loadApps();
+  const app_id = randomUUID();
+  apps[app_id] = { app_id, name, owner_user_id: req.userId, session_id: null, tool, model, created_at: new Date().toISOString() };
+  saveApps(apps);
+  res.status(201).json(apps[app_id]);
+});
+
+app.get('/apps/:app_id', appOwnerGuard, (req, res) => {
+  res.json(loadApps()[req.params.app_id]);
+});
+
+app.delete('/apps/:app_id', appOwnerGuard, (req, res) => {
+  const apps = loadApps();
+  if (!apps[req.params.app_id]) return res.status(404).json({ error: 'App not found' });
+  delete apps[req.params.app_id];
+  saveApps(apps);
+  res.json({ deleted: true });
+});
+
+app.get('/apps/:app_id/messages', appOwnerGuard, (req, res) => {
+  const apps = loadApps();
+  const appObj = apps[req.params.app_id];
+  const sessionId = appObj?.session_id;
+  if (!sessionId) return res.json({ messages: [] });
+
+  const tool = appObj.tool || 'agy';
+
   if (tool === 'claude') {
-    const claudeFile = path.join(CLAUDE_PROJECTS_DIR, `${id}.jsonl`);
+    const claudeFile = path.join(CLAUDE_PROJECTS_DIR, `${sessionId}.jsonl`);
     if (!fs.existsSync(claudeFile)) return res.json({ messages: [] });
     try {
       const lines = fs.readFileSync(claudeFile, 'utf8').trim().split('\n').filter(Boolean);
       const messages = [];
       for (const line of lines) {
-        let d;
-        try { d = JSON.parse(line); } catch { continue; }
+        let d; try { d = JSON.parse(line); } catch { continue; }
         if (d.isSidechain) continue;
         const content = d.message?.content;
         if (!content) continue;
@@ -1572,19 +981,16 @@ app.get('/sessions/:id/messages', (req, res) => {
     }
   }
 
-  // --- agy session ---
-  const transcriptPath = path.join(process.env.HOME, '.gemini', 'antigravity-cli', 'brain', id, '.system_generated', 'logs', 'transcript.jsonl');
+  // agy session
+  const transcriptPath = path.join(process.env.HOME, '.gemini', 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
   if (!fs.existsSync(transcriptPath)) return res.json({ messages: [] });
-
   try {
     const lines = fs.readFileSync(transcriptPath, 'utf8').trim().split('\n').filter(Boolean);
     const messages = [];
     for (const line of lines) {
-      let entry;
-      try { entry = JSON.parse(line); } catch { continue; }
+      let entry; try { entry = JSON.parse(line); } catch { continue; }
       const { type, source, status, content } = entry;
       if (!content || status !== 'DONE') continue;
-
       if (type === 'USER_INPUT' && source === 'USER_EXPLICIT') {
         let text = String(content);
         const match = text.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
@@ -1602,10 +1008,58 @@ app.get('/sessions/:id/messages', (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Users (admin)
+// ---------------------------------------------------------------------------
+
+app.post('/users', adminOnly, (req, res) => {
+  const { name, external_id } = req.body;
+  if (!name) return res.status(400).json({ error: 'name is required' });
+  const users = loadUsers();
+  if (external_id) {
+    const dup = Object.values(users).find(u => u.external_id === external_id);
+    if (dup) return res.status(409).json({ error: 'external_id already exists', user_id: dup.user_id });
+  }
+  const user_id = randomUUID();
+  const api_key = require('crypto').randomBytes(24).toString('hex');
+  users[user_id] = { user_id, name, api_key, external_id: external_id || null, created_at: new Date().toISOString() };
+  saveUsers(users);
+  res.status(201).json(users[user_id]);
+});
+
+app.get('/users', adminOnly, (req, res) => {
+  const users = loadUsers();
+  res.json({ total: Object.keys(users).length, items: Object.values(users) });
+});
+
+app.get('/users/me', (req, res) => {
+  if (req.isAdmin) return res.json({ user_id: 'admin', name: 'Admin', api_key: null });
+  const user = loadUsers()[req.userId];
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  res.json(user);
+});
+
+app.delete('/users/:user_id', adminOnly, (req, res) => {
+  const users = loadUsers();
+  if (!users[req.params.user_id]) return res.status(404).json({ error: 'User not found' });
+  delete users[req.params.user_id];
+  saveUsers(users);
+  const apps = loadApps();
+  for (const aid of Object.keys(apps)) {
+    if (apps[aid].owner_user_id === req.params.user_id) delete apps[aid];
+  }
+  saveApps(apps);
+  res.json({ deleted: true });
+});
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
 const CLAUDE_MODELS = [
-  { id: 'claude-opus-4-8',          name: 'Claude Opus 4.8' },
-  { id: 'claude-sonnet-4-6',        name: 'Claude Sonnet 4.6' },
-  { id: 'claude-haiku-4-5-20251001',name: 'Claude Haiku 4.5' },
+  { id: 'claude-opus-4-8',           name: 'Claude Opus 4.8' },
+  { id: 'claude-sonnet-4-6',         name: 'Claude Sonnet 4.6' },
+  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
 ];
 
 app.get('/models', (req, res) => {
@@ -1618,18 +1072,17 @@ app.get('/models', (req, res) => {
   proc.on('close', () => {
     const agyModels = out.trim().split('\n').filter(Boolean).map(line => {
       const [id, ...rest] = line.split('\t');
-      return { id: id.trim(), name: rest.join(' ').trim(), tool: 'agy' };
+      return { id: id.trim(), name: rest.join(' ').trim() };
     });
     if (tool === 'agy') return res.json({ tool: 'agy', models: agyModels });
-    res.json({
-      tools: {
-        agy:    { name: 'Antigravity CLI', models: agyModels },
-        claude: { name: 'Claude Code CLI', models: CLAUDE_MODELS },
-      },
-    });
+    res.json({ tools: { agy: { name: 'Antigravity CLI', models: agyModels }, claude: { name: 'Claude Code CLI', models: CLAUDE_MODELS } } });
   });
   proc.on('error', err => res.status(500).json({ error: err.message }));
 });
+
+// ---------------------------------------------------------------------------
+// Usage
+// ---------------------------------------------------------------------------
 
 app.get('/usage', (req, res) => {
   function runCmd(bin, args) {
@@ -1647,8 +1100,6 @@ app.get('/usage', (req, res) => {
     runCmd(AGY_BIN,    ['--print', '/usage', '--output-format', 'json']),
   ]).then(([claudeOut, agyOut]) => {
     const result = {};
-
-    // --- Claude ---
     try {
       const d = JSON.parse(claudeOut);
       const text = d.result || '';
@@ -1660,7 +1111,6 @@ app.get('/usage', (req, res) => {
       };
     } catch { result.claude = null; }
 
-    // --- AGY ---
     try {
       const d = JSON.parse(agyOut);
       const groups = d.command?.data?.groups || [];
@@ -1678,14 +1128,19 @@ app.get('/usage', (req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Health
+// ---------------------------------------------------------------------------
+
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', agy: AGY_BIN, auth: (ADMIN_KEY || LEGACY_KEYS) ? 'enabled' : 'open' });
+  res.json({ status: 'ok', agy: AGY_BIN, auth: ADMIN_KEY ? 'enabled' : 'open' });
 });
+
+// ---------------------------------------------------------------------------
 
 const PORT = process.env.PORT || 3986;
 app.listen(PORT, () => {
   console.log(`agy API running on port ${PORT}`);
   console.log(`docs:  http://localhost:${PORT}/docs`);
-  console.log(`auth:  admin=${ADMIN_KEY ? 'yes' : 'no'}, legacy_keys=${LEGACY_KEYS ? LEGACY_KEYS.size : 0}, apps=${Object.keys(loadApps()).length}`);
-  console.log(`upload dir: ${UPLOAD_DIR}`);
+  console.log(`users: ${Object.keys(loadUsers()).length}, apps: ${Object.keys(loadApps()).length}`);
 });

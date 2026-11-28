@@ -11,25 +11,32 @@ const API_KEY = process.env.API_KEY || '';
 const ADMIN_KEY = process.env.ADMIN_KEY || '';
 const PORT = process.env.PORT || 3000;
 
-// Config endpoint — browser reads this to know API_URL and API_KEY
+// Config endpoint — browser reads this to get default keys for auto-login
+app.get('/dashboard/config.js', (req, res) => {
+  res.type('application/javascript');
+  // Only expose adminKey; individual user keys come from their own login
+  res.send(`window.AGY_CONFIG = ${JSON.stringify({ apiKey: API_KEY, adminKey: ADMIN_KEY })};`);
+});
+// Legacy path
 app.get('/config.js', (req, res) => {
   res.type('application/javascript');
   res.send(`window.AGY_CONFIG = ${JSON.stringify({ apiKey: API_KEY, adminKey: ADMIN_KEY })};`);
 });
 
-// Proxy /api/* → actual API (inject API key, pipe streams)
+// Proxy /api/* → actual API — pass client headers as-is (do NOT override x-api-key)
 app.use('/api', (req, res) => {
   const target = new URL(API_URL);
+  const headers = { ...req.headers, host: target.host };
+  // Only inject fallback key if client sent none
+  if (!headers['x-api-key'] && !headers['authorization']) {
+    if (API_KEY) headers['x-api-key'] = API_KEY;
+  }
   const options = {
     hostname: target.hostname,
     port: parseInt(target.port, 10) || 3986,
     path: req.url,
     method: req.method,
-    headers: {
-      ...req.headers,
-      'x-api-key': API_KEY,
-      host: target.host,
-    },
+    headers,
   };
 
   const proxy = http.request(options, (proxyRes) => {
